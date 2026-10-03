@@ -1,0 +1,32 @@
+[project]
+name = "selene"
+version = "0.1.0"
+description = "Describe music in words; a local LLM writes TidalCycles; GHCi plays it through SuperDirt."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Jeff Hobbs" }]
+requires-python = ">=3.11"
+keywords = ["tidalcycles", "supercollider", "live-coding", "ollama", "tui"]
+dependencies = [
+    "textual>=0.80",
+    "httpx>=0.27",
+]
+
+[project.urls]
+Homepage = "https://github.com/jeffehobbs/selene"
+
+[project.scripts]
+selene = "selene.app:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["selene"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
