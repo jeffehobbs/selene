@@ -20,6 +20,9 @@ d2"*, *"half-time the drums"*, *"make it sparser"*.
   SuperDirt synths you actually have, and code naming sounds you don't have is
   sent back for a fix before it plays.
 - **Everything local.** No cloud APIs; default model is `gemma4:31b-mlx`.
+- **Mute by clicking.** Each playing orbit shows as a `d1 d2 d3` chip in the
+  top bar: click to mute/unmute, shift-click to solo. Mutes survive the model
+  revising the pattern; `esc` clears them.
 - **Session log.** Every pattern that plays is appended to
   `~/.local/share/selene/<date>.tidal`.
 
@@ -55,9 +58,12 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 | `ctrl+b` | boot SuperDirt |
 | `ctrl+q` | quit (hushes, stops anything selene started) |
 | `↑` / `↓` | prompt history |
+| click `dN` | mute / unmute that orbit |
+| shift-click `dN` | solo that orbit (again to un-solo) |
 
 In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/cps 0.6`,
-`/bpm 128`, `/model NAME`, `/new` are commands.
+`/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/model NAME`, `/new` are
+commands.
 
 ## Options
 

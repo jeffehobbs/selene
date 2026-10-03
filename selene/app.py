@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
@@ -44,11 +44,31 @@ class PromptInput(Input):
         self.cursor_position = len(self.value)
 
 
+class OrbitChip(Static):
+    """A clickable dN in the status bar: click mutes/unmutes, shift-click solos."""
+
+    def __init__(self, orbit: str):
+        super().__init__(f" {orbit} ")
+        self.orbit = orbit
+
+    def set_muted(self, muted: bool) -> None:
+        self.set_class(muted, "muted")
+        self.tooltip = f"{'unmute' if muted else 'mute'} {self.orbit} · shift-click solo"
+
+    def on_click(self, event: events.Click) -> None:
+        self.app.toggle_orbit(self.orbit, solo=event.shift)
+
+
 class Selene(App):
     TITLE = "selene"
     CSS = """
     Screen { layout: vertical; }
     #bar { height: 1; padding: 0 1; background: $panel; }
+    #status, #orbits { width: auto; }
+    OrbitChip { width: auto; margin-left: 1; color: $success; background: $success 15%; }
+    OrbitChip:hover { background: $success 35%; }
+    OrbitChip.muted { color: $text-muted; background: $error 15%; text-style: strike; }
+    OrbitChip.muted:hover { background: $error 30%; }
     #main { height: 1fr; }
     #code { width: 1fr; border: round $primary 50%; }
     #code, #log { border-title-color: $text-muted; }
@@ -78,6 +98,7 @@ class Selene(App):
         self.known_sounds = set(catalog.sample_banks()) | set(catalog.synth_names())
         self.history: list[dict] = []
         self.playing_code = ""
+        self.muted: set[str] = set()
         self.last_prompt = ""
         self.fresh = False  # next prompt ignores what's playing
         self.state = {"model": args.model, "ghci": "booting", "dirt": "?", "llm": ""}
@@ -85,7 +106,9 @@ class Selene(App):
         self.session_file = SESSIONS / f"{datetime.now():%Y-%m-%d}.tidal"
 
     def compose(self) -> ComposeResult:
-        yield Static(id="bar")
+        with Horizontal(id="bar"):
+            yield Static(id="status")
+            yield Horizontal(id="orbits")
         with Horizontal(id="main"):
             yield RichLog(id="log", wrap=True, markup=True, max_lines=2000)
             yield TextArea("", id="code", show_line_numbers=True, tab_behavior="indent",
@@ -118,9 +141,51 @@ class Selene(App):
         bar.append(s["model"], style="dim")
         if s["llm"]:
             bar.append(f"  {s['llm']}", style="italic yellow")
-        if orbits := blocks.sounding_orbits(self.playing_code):
-            bar.append("   ▶ " + " ".join(orbits), style="green")
-        self.query_one("#bar", Static).update(bar)
+        orbits = blocks.sounding_orbits(self.playing_code)
+        if orbits:
+            bar.append("   ▶", style="green")
+        self.query_one("#status", Static).update(bar)
+        self._sync_orbits(orbits)
+
+    def _sync_orbits(self, orbits: list[str]) -> None:
+        box = self.query_one("#orbits", Horizontal)
+        chips = list(box.query(OrbitChip))
+        if [c.orbit for c in chips] != orbits:
+            box.remove_children()
+            chips = [OrbitChip(o) for o in orbits]
+            box.mount(*chips)
+        for chip in chips:
+            chip.set_muted(chip.orbit in self.muted)
+        # An orbit that left the code keeps its Tidal mute flag; clear it so
+        # it isn't silent when the model brings it back.
+        if gone := self.muted - set(orbits):
+            self.muted -= gone
+            self._apply_mutes({o: False for o in gone})
+
+    def toggle_orbit(self, orbit: str, solo: bool = False) -> None:
+        orbits = blocks.sounding_orbits(self.playing_code)
+        if solo:
+            soloed = self.muted == set(orbits) - {orbit}
+            target = set() if soloed else set(orbits) - {orbit}
+        else:
+            target = self.muted ^ {orbit}
+        changes = {o: o in target for o in orbits if (o in target) != (o in self.muted)}
+        self.muted = target & set(orbits)
+        self._render_bar()
+        self._apply_mutes(changes)
+
+    @work(group="mute")
+    async def _apply_mutes(self, changes: dict[str, bool]) -> None:
+        for orbit, muted in sorted(changes.items()):
+            result = await self.ghci.set_muted(orbit, muted)
+            if not result.ok:
+                self.log_line(f"couldn't {'mute' if muted else 'unmute'} {orbit}", "red")
+        if changes:
+            on = [o for o, m in sorted(changes.items()) if m]
+            off = [o for o, m in sorted(changes.items()) if not m]
+            parts = ([f"muted {' '.join(on)}"] if on else []) + \
+                    ([f"unmuted {' '.join(off)}"] if off else [])
+            self.log_line(" · ".join(parts), "magenta")
 
     def _set(self, **kw) -> None:
         self.state.update(kw)
@@ -204,10 +269,28 @@ class Selene(App):
             self.ollama.model = self.ollama.requested = arg.strip()
             self._set(model=arg.strip())
             self.run_worker(self._resolve_model(), group="services")
+        elif name in ("mute", "unmute", "solo"):
+            self.orbit_command(name, arg)
         elif name == "new":
             self.action_new_session()
         else:
-            self.log_line("commands: /hush /cps N /bpm N /model NAME /new", "yellow")
+            self.log_line("commands: /hush /cps N /bpm N /mute N /unmute [N] /solo N "
+                          "/model NAME /new", "yellow")
+
+    def orbit_command(self, name: str, arg: str) -> None:
+        orbits = blocks.sounding_orbits(self.playing_code)
+        wanted = [f"d{a.lstrip('d')}" for a in arg.split()]
+        if name == "unmute" and not wanted:  # bare /unmute: everything
+            wanted = sorted(self.muted)
+        if not wanted or any(o not in orbits for o in wanted):
+            self.log_line(f"playing orbits: {' '.join(orbits) or 'none'}", "yellow")
+            return
+        if name == "solo":
+            self.toggle_orbit(wanted[0], solo=True)
+            return
+        for orbit in wanted:
+            if (orbit in self.muted) != (name == "mute"):
+                self.toggle_orbit(orbit)
 
     async def _resolve_model(self) -> None:
         try:
@@ -239,6 +322,7 @@ class Selene(App):
     async def _hush(self) -> None:
         await self.ghci.hush()
         self.playing_code = ""
+        self.muted.clear()
         self._code_state(None)
         self.log_line("hush", "magenta")
         self._render_bar()

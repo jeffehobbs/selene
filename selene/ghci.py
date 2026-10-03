@@ -70,7 +70,13 @@ class Ghci:
         return EvalResult(True, output)
 
     async def hush(self) -> EvalResult:
-        return await self._run(["hush"], 10)
+        # Tidal keeps mute flags through hush; clear them so the next
+        # pattern on a muted orbit isn't silently dropped.
+        return await self._run(["hush", "unmuteAll"], 10)
+
+    async def set_muted(self, orbit: str, muted: bool) -> EvalResult:
+        """Mute/unmute dN; Tidal keeps the flag when dN is re-evaluated."""
+        return await self._run([f"{'mute' if muted else 'unmute'} {int(orbit[1:])}"], 10)
 
     async def _run(self, lines: list[str], timeout: float) -> EvalResult:
         if not self.running:
