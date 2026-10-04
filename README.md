@@ -70,13 +70,16 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 | `ctrl+b` | boot SuperDirt |
 | `ctrl+q` | quit (hushes, stops anything selene started) |
 | `↑` / `↓` | prompt history |
+| drag the divider | resize the ghci log / pattern panels (double-click: back to 50/50) |
 | click `dN` | mute / unmute that orbit |
 | shift-click `dN` | solo that orbit (again to un-solo) |
 
 In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/cps 0.6`,
 `/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/fade 4`, `/stop 4`,
-`/take 4`, `/flow`, `/save [NAME]`, `/open [NAME]`, `/model NAME`, `/new` are
-commands.
+`/take 4`, `/flow`, `/split 30` (the log's share of the width; `/split`
+resets), `/save [NAME]`, `/open [NAME]`, `/model NAME`, `/new` are commands.
+The split and whether the lanes are showing are remembered between launches
+(`~/.local/share/selene/settings.json`).
 
 **Held layers.** Like Tidal itself, playing new code doesn't stop layers it
 doesn't mention: open a file with `d1`–`d3` over one with `d1`–`d6` and

@@ -15,9 +15,10 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.strip import Strip
+from textual.widget import Widget
 from textual.widgets import Footer, Input, RichLog, Static, TextArea
 
-from . import blocks, catalog
+from . import blocks, catalog, settings
 from .files import DEFAULT_DIR, ConfirmScreen, PathScreen, resolve
 from .flow import (DEFAULT_DEPTH, DEPTHS, CtrlSender, FlowDirector, TidalClock, ctrl_name,
                    free_udp_port)
@@ -87,6 +88,45 @@ class PatternEditor(TextArea):
             segments[0] = Segment(number + first.text[digits:], first.style, first.control)
             return Strip(segments, strip.cell_length)
         return strip
+
+
+class Divider(Widget):
+    """The bar between the ghci log and the pattern: drag it to resize them,
+    double-click to put it back in the middle."""
+
+    DEFAULT_CSS = """
+    Divider { width: 1; height: 1fr; color: $primary 40%; }
+    Divider:hover, Divider.-dragging { color: $accent; background: $accent 25%; }
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.dragging = False
+        self.tooltip = "drag to resize · double-click to reset"
+
+    def render_line(self, y: int) -> Strip:
+        return Strip([Segment("│", self.rich_style)], 1)
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        self.dragging = True
+        self.add_class("-dragging")
+        self.capture_mouse()
+        event.stop()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if self.dragging:
+            self.app.split_at(event.screen_x)
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if self.dragging:
+            self.dragging = False
+            self.remove_class("-dragging")
+            self.release_mouse()
+            self.app.remember_split()
+
+    def on_click(self, event: events.Click) -> None:
+        if event.chain == 2:
+            self.app.set_split(settings.DEFAULTS["split"])
 
 
 class Draft:
@@ -168,7 +208,7 @@ class Selene(App):
     #code.failed { border: round $error; }
     #code.busy { border: round $warning; }
     #code.drafting { color: $text-muted; }
-    #log { width: 1fr; border: round $primary 50%; padding: 0 1; overflow-x: hidden;
+    #log { width: 50%; border: round $primary 50%; padding: 0 1; overflow-x: hidden;
            scrollbar-size-vertical: 1; }
     #prompt { border: round $accent; }
     """
@@ -223,7 +263,9 @@ class Selene(App):
         # Tidal's cycle position, from the events it copies to our tap port.
         self.clock = TidalClock()
         self.lane_model = LaneModel(synths=set(catalog.synth_names()))
-        self.lanes_on = True
+        remembered = settings.load()
+        self.lanes_on = bool(remembered["lanes"])
+        self.split = float(remembered["split"])  # the log's share of the width, %
         self.tap_port = free_udp_port()
         # The .tidal file the editor was last saved to / opened from.
         self.current_file: Path | None = None
@@ -239,6 +281,7 @@ class Selene(App):
         yield Lanes(self.lane_model, self.clock, OrbitChip, id="lanes")
         with Horizontal(id="main"):
             yield RichLog(id="log", wrap=True, markup=True, max_lines=2000)
+            yield Divider(id="divider")
             yield PatternEditor("", id="code", show_line_numbers=True, tab_behavior="indent",
                                 soft_wrap=False)
         yield PromptInput(placeholder="describe some music…  (!code runs raw Tidal)",
@@ -249,6 +292,7 @@ class Selene(App):
         self.query_one("#code").border_title = "pattern"
         self.query_one("#log").border_title = "ghci"
         self.query_one("#prompt").focus()
+        self.call_after_refresh(self.set_split, self.split, False)
         self._render_bar()
         self.start_services()
         self.set_interval(1.0, self._discover)
@@ -449,6 +493,12 @@ class Selene(App):
             self.held_command(name, arg.strip())
         elif name == "flow":
             self.flow_command(arg.strip())
+        elif name == "split":
+            try:
+                self.set_split(float(arg) if arg.strip() else settings.DEFAULTS["split"])
+            except ValueError:
+                self.log_line("/split N: the log's share of the width in percent (/split resets)",
+                              "yellow")
         elif name == "save":
             self._save_as(arg.strip()) if arg.strip() else self.action_save()
         elif name == "open":
@@ -457,7 +507,7 @@ class Selene(App):
             self.action_new_session()
         else:
             self.log_line("commands: /hush /cps N /bpm N /mute N /unmute [N] /solo N "
-                          "/fade N|held /stop N|held /take N /flow [1-5] /save [NAME] /open [NAME] "
+                          "/fade N|held /stop N|held /take N /flow [1-5] /split [N] /save [NAME] /open [NAME] "
                           "/model NAME /new", "yellow")
 
     def orbit_command(self, name: str, arg: str) -> None:
@@ -590,7 +640,34 @@ class Selene(App):
 
     def action_lanes(self) -> None:
         self.lanes_on = not self.lanes_on
+        settings.save(lanes=self.lanes_on)
         self._render_bar()
+
+    # ── split ─────────────────────────────────────────────────────────────
+
+    MIN_PANEL = 20  # columns either panel keeps, however far the divider goes
+
+    def set_split(self, percent: float, remember: bool = True) -> None:
+        """Give the log `percent` of the width (the pattern gets the rest).
+        Kept as a percentage so it holds its proportion when the terminal
+        resizes; clamped so neither panel gets narrower than MIN_PANEL."""
+        width = self.query_one("#main").size.width
+        if width > 2 * self.MIN_PANEL + 1:
+            low = 100 * self.MIN_PANEL / width
+            percent = min(max(percent, low), 100 - low - 100 / width)
+        self.split = round(percent, 1)
+        self.query_one("#log").styles.width = f"{self.split}%"
+        if remember:
+            self.remember_split()
+
+    def split_at(self, screen_x: int) -> None:
+        """Dragging: put the divider at this screen column."""
+        main = self.query_one("#main").region
+        if main.width:
+            self.set_split(100 * (screen_x - main.x) / main.width, remember=False)
+
+    def remember_split(self) -> None:
+        settings.save(split=self.split)
 
     def _modal(self) -> bool:
         return len(self.screen_stack) > 1

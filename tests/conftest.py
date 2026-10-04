@@ -96,4 +96,11 @@ async def fake_dirt():
     transport.close()
 
 
+@pytest.fixture(autouse=True)
+def private_settings(tmp_path, monkeypatch):
+    """Every test gets its own settings file, never the player's real one."""
+    monkeypatch.setenv("SELENE_SETTINGS", str(tmp_path / "settings.json"))
+    return tmp_path / "settings.json"
+
+
 needs_ghci = pytest.mark.skipif(shutil.which("ghci") is None, reason="ghci not installed")
