@@ -763,12 +763,19 @@ class Selene(App):
         self._flow_rebase(player=False)
         self._set(flow="flow")
         self.log_line(f"☯ flow on · depth {self.flow_depth}", "magenta")
-        if self.args.boot != str(BUNDLED_BOOT):
-            self.log_line("flow needs SELENE_CTRL_PORT support in a custom --boot "
-                          "(see the bundled BootTidal.hs)", "yellow")
+        if not self._boot_supports_flow():
+            self.log_line("flow needs the SELENE_CTRL_PORT and SELENE_TAP_PORT lines from the "
+                          "bundled BootTidal.hs in your --boot file", "yellow")
         if self.playing_code:
             # Re-evaluate with the wrappers; at neutral they change nothing audible.
             self.evaluate(self.playing_code, source="flow")
+
+    def _boot_supports_flow(self) -> bool:
+        try:
+            text = Path(self.args.boot).read_text(errors="ignore")
+        except OSError:
+            return False
+        return "SELENE_CTRL_PORT" in text and "SELENE_TAP_PORT" in text
 
     def _flow_stop(self, log: bool = True) -> None:
         for handle in self.flow_pending:
