@@ -59,6 +59,8 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 | `ctrl+r` | regenerate the last prompt |
 | `ctrl+n` | new context: next prompt ignores what's playing |
 | `ctrl+f` | Flow on / off |
+| `ctrl+s` | save the editor to a `.tidal` file (asks for a name the first time) |
+| `ctrl+o` | open a `.tidal` file into the editor (doesn't play it until `ctrl+e`) |
 | `ctrl+b` | boot SuperDirt |
 | `ctrl+q` | quit (hushes, stops anything selene started) |
 | `↑` / `↓` | prompt history |
@@ -66,8 +68,13 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 | shift-click `dN` | solo that orbit (again to un-solo) |
 
 In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/cps 0.6`,
-`/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/flow`, `/model NAME`,
-`/new` are commands.
+`/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/flow`, `/save [NAME]`,
+`/open [NAME]`, `/model NAME`, `/new` are commands.
+
+Files live in `~/Documents/selene` unless you pass `--dir`; a bare name means
+`NAME.tidal` there. The editor's title shows the open file, with `•` when it
+has unsaved changes. Replacing a different file, or opening over edits that
+are neither saved nor playing, asks first.
 
 Edits you make in the editor are the base for your next prompt even if you
 haven't played them yet, so you can sketch a change and ask the model to run
@@ -110,6 +117,7 @@ OSC port, so nothing is re-evaluated to make the music move. A custom
 --ghci PATH         GHCi executable (default: ghci)
 --boot FILE         BootTidal.hs to load (default: the bundled one)
 --superdirt         boot SuperCollider + SuperDirt if it isn't running
+--dir FOLDER        where .tidal files are saved/opened (default: ~/Documents/selene)
 --fix-attempts N    times to feed errors back to the model (default: 2)
 ```
 

@@ -15,6 +15,7 @@ from textual.containers import Horizontal
 from textual.widgets import Footer, Input, RichLog, Static, TextArea
 
 from . import blocks, catalog
+from .files import DEFAULT_DIR, ConfirmScreen, PathScreen, resolve
 from .flow import CtrlSender, FlowDirector, ctrl_name, free_udp_port
 from .ghci import BUNDLED_BOOT, Ghci
 from .llm import (Ollama, build_system_prompt, evolve_message, fix_message,
@@ -88,11 +89,13 @@ class Selene(App):
     """
     BINDINGS = [
         Binding("escape", "hush", "Hush", priority=True),
-        Binding("ctrl+e", "play_editor", "Play editor", priority=True),
-        Binding("ctrl+r", "retry", "Regenerate", priority=True),
-        Binding("ctrl+n", "new_session", "New context", priority=True),
+        Binding("ctrl+e", "play_editor", "Play", priority=True),
+        Binding("ctrl+r", "retry", "Retry", priority=True),
+        Binding("ctrl+n", "new_session", "New", priority=True),
         Binding("ctrl+f", "flow", "Flow", priority=True),
-        Binding("ctrl+b", "boot_dirt", "Boot SuperDirt", priority=True),
+        Binding("ctrl+s", "save", "Save", priority=True),
+        Binding("ctrl+o", "open", "Open", priority=True),
+        Binding("ctrl+b", "boot_dirt", "SuperDirt", priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
 
@@ -121,6 +124,10 @@ class Selene(App):
         self.flow_ctrl: CtrlSender | None = None
         self.flow_timer = None
         self.flow_t0 = 0.0
+        # The .tidal file the editor was last saved to / opened from.
+        self.current_file: Path | None = None
+        self.saved_text = ""
+        self.file_dir = Path(args.dir).expanduser()
         SESSIONS.mkdir(parents=True, exist_ok=True)
         self.session_file = SESSIONS / f"{datetime.now():%Y-%m-%d}.tidal"
 
@@ -296,11 +303,15 @@ class Selene(App):
             self.orbit_command(name, arg)
         elif name == "flow":
             self.action_flow()
+        elif name == "save":
+            self._save_as(arg.strip()) if arg.strip() else self.action_save()
+        elif name == "open":
+            self.action_open(arg.strip())
         elif name == "new":
             self.action_new_session()
         else:
             self.log_line("commands: /hush /cps N /bpm N /mute N /unmute [N] /solo N "
-                          "/flow /model NAME /new", "yellow")
+                          "/flow /save [NAME] /open [NAME] /model NAME /new", "yellow")
 
     def orbit_command(self, name: str, arg: str) -> None:
         orbits = blocks.sounding_orbits(self.playing_code)
@@ -338,7 +349,13 @@ class Selene(App):
         self.log_line("── new context: next prompt starts from scratch ──", "magenta")
         self.fresh = True
 
+    def _modal(self) -> bool:
+        return len(self.screen_stack) > 1
+
     def action_hush(self) -> None:
+        if self._modal():  # esc in a dialog closes it; it must not hush the music
+            self.screen.action_cancel()
+            return
         self.workers.cancel_group(self, "play")  # escape also stops a generation
         self._set(llm="")
         self._hush()
@@ -612,6 +629,99 @@ class Selene(App):
             self.flow.evolved(orbit, kind, ok, self._flow_now())
             self._set(flow="flow" if self.flow_on else "easing out")
 
+    # ── files ─────────────────────────────────────────────────────────────
+
+    @on(TextArea.Changed, "#code")
+    def _code_changed(self) -> None:
+        self._update_title()
+
+    def _update_title(self) -> None:
+        code = self.query_one("#code", TextArea)
+        if self.current_file is None:
+            code.border_title = "pattern"
+            return
+        unsaved = code.text.strip() != self.saved_text.strip()
+        code.border_title = self.current_file.name + (" •" if unsaved else "")
+
+    def _unsaved_edits(self) -> bool:
+        """Editor text that would be lost: not saved, and not playing (what plays
+        is in the session log)."""
+        text = self.query_one("#code", TextArea).text.strip()
+        return bool(text) and text != self.saved_text.strip() and text != self.playing_code.strip()
+
+    def action_save(self) -> None:
+        if self._modal():
+            return
+        if self.current_file:
+            self._write(self.current_file)
+        else:
+            self._save_as()
+
+    def _save_as(self, name: str = "") -> None:
+        if name:
+            self._confirm_write(resolve(name, self.file_dir, save=True))
+            return
+        initial = self.current_file.name if self.current_file else ""
+        self.push_screen(PathScreen("save", self.file_dir, initial),
+                         lambda path: path and self._confirm_write(path))
+
+    def _confirm_write(self, path: Path) -> None:
+        if path.exists() and path != self.current_file:
+            self.push_screen(ConfirmScreen(f"Replace {path.name}?", "Replace"),
+                             lambda yes: yes and self._write(path))
+        else:
+            self._write(path)
+
+    def _write(self, path: Path) -> None:
+        text = self.query_one("#code", TextArea).text
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text.rstrip("\n") + "\n")
+        except OSError as e:
+            self.log_line(f"couldn't save {path}: {e.strerror or e}", "red")
+            return
+        self.current_file, self.saved_text, self.file_dir = path, text, path.parent
+        self._update_title()
+        self.log_line(f"saved {self._pretty_path(path)}", "green")
+
+    def action_open(self, name: str = "") -> None:
+        if self._modal():
+            return
+        if name:
+            self._confirm_open(resolve(name, self.file_dir, save=False))
+            return
+        self.push_screen(PathScreen("open", self.file_dir),
+                         lambda path: path and self._confirm_open(path))
+
+    def _confirm_open(self, path: Path) -> None:
+        if not path.is_file():
+            self.log_line(f"no such file: {self._pretty_path(path)}", "red")
+        elif self._unsaved_edits():
+            self.push_screen(ConfirmScreen("The editor has unsaved edits. Discard them?",
+                                           "Discard"),
+                             lambda yes: yes and self._load(path))
+        else:
+            self._load(path)
+
+    def _load(self, path: Path) -> None:
+        try:
+            text = path.read_text()
+        except (OSError, UnicodeDecodeError) as e:
+            self.log_line(f"couldn't open {path}: {e}", "red")
+            return
+        self.current_file, self.saved_text, self.file_dir = path, text, path.parent
+        self.query_one("#code", TextArea).text = text
+        self._code_state(None)
+        self._update_title()
+        self.log_line(f"opened {self._pretty_path(path)} · ctrl+e plays it", "green")
+
+    @staticmethod
+    def _pretty_path(path: Path) -> str:
+        try:
+            return "~/" + str(path.relative_to(Path.home()))
+        except ValueError:
+            return str(path)
+
     def _save(self, code: str, label: str) -> None:
         with self.session_file.open("a") as f:
             f.write(f"-- {datetime.now():%H:%M:%S}  {label}\n{code}\n\n")
@@ -644,6 +754,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--boot", default=str(BUNDLED_BOOT), help="BootTidal.hs to load")
     p.add_argument("--superdirt", action="store_true",
                    help="boot SuperCollider + SuperDirt at startup if it isn't running")
+    p.add_argument("--dir", default=str(DEFAULT_DIR),
+                   help=f"folder for .tidal files (default: {DEFAULT_DIR})".replace(str(Path.home()), "~"))
     p.add_argument("--fix-attempts", type=int, default=2,
                    help="times to feed GHCi errors back to the model (default: 2)")
     return p.parse_args(argv)
