@@ -20,7 +20,7 @@ from textual.widget import Widget
 from textual.widgets import Footer, Input, RichLog, Static, TextArea
 
 from . import blocks, catalog, settings
-from .files import DEFAULT_DIR, ConfirmScreen, PathScreen, resolve
+from .files import DEFAULT_DIR, ConfirmScreen, PathScreen, PrefsScreen, resolve
 from .flow import (DEFAULT_DEPTH, DEPTHS, CtrlSender, FlowDirector, TidalClock, ctrl_name,
                    free_udp_port)
 from .ghci import BUNDLED_BOOT, Ghci
@@ -232,7 +232,8 @@ class Selene(App):
         self.ollama = Ollama(args.ollama_url, args.model)
         self.ghci = Ghci(args.ghci, Path(args.boot), on_output=self._ghci_line)
         self.dirt = SuperDirt(on_output=self._dirt_line)
-        self.system_prompt = build_system_prompt(catalog.sample_banks(), catalog.synth_names())
+        self.preferences = settings.load_preferences()
+        self.system_prompt = self._build_prompt()
         self.known_sounds = set(catalog.sample_banks()) | set(catalog.synth_names())
         self.history: list[dict] = []
         self.playing_code = ""  # the current layers: what the editor last played
@@ -508,6 +509,10 @@ class Selene(App):
             self.held_command(name, arg.strip())
         elif name == "flow":
             self.flow_command(arg.strip())
+        elif name == "prefs":
+            self.action_prefs()
+        elif name == "prefer":
+            self.prefer(arg.strip())
         elif name == "split":
             try:
                 self.set_split(float(arg) if arg.strip() else settings.DEFAULTS["split"])
@@ -522,7 +527,7 @@ class Selene(App):
             self.action_new_session()
         else:
             self.log_line("commands: /hush /cps N /bpm N /mute N /unmute [N] /solo N "
-                          "/fade N|held|all [CYCLES] /stop N|held|all /take N /flow [1-5] /split [N] /save [NAME] /open [NAME] "
+                          "/prefs /prefer TEXT /fade N|held|all [CYCLES] /stop N|held|all /take N /flow [1-5] /split [N] /save [NAME] /open [NAME] "
                           "/model NAME /new", "yellow")
 
     def orbit_command(self, name: str, arg: str) -> None:
@@ -539,6 +544,39 @@ class Selene(App):
         for orbit in wanted:
             if (orbit in self.muted) != (name == "mute"):
                 self.toggle_orbit(orbit)
+
+    # ── preferences ───────────────────────────────────────────────────────
+
+    def _build_prompt(self) -> str:
+        return build_system_prompt(catalog.sample_banks(), catalog.synth_names(),
+                                   self.preferences)
+
+    def action_prefs(self) -> None:
+        if self._modal():
+            return
+        self.push_screen(PrefsScreen(self.preferences),
+                         lambda text: text is not None and self._set_preferences(text))
+
+    def prefer(self, line: str) -> None:
+        """/prefer TEXT: add one line to the preferences."""
+        if not line:
+            self.log_line("/prefer TEXT adds a line to your preferences; /prefs edits them",
+                          "yellow")
+            return
+        current = self.preferences.rstrip()
+        self._set_preferences(f"{current}\n- {line}" if current else f"- {line}")
+
+    def _set_preferences(self, text: str) -> None:
+        try:
+            settings.save_preferences(text)
+        except OSError as e:
+            self.log_line(f"couldn't save preferences: {e}", "red")
+            return
+        self.preferences = text.strip()
+        self.system_prompt = self._build_prompt()
+        lines = len([ln for ln in self.preferences.splitlines() if ln.strip()])
+        self.log_line(f"preferences saved ({lines} line{'s' * (lines != 1)}) · "
+                      "used from the next prompt" if lines else "preferences cleared", "green")
 
     # ── held layers ───────────────────────────────────────────────────────
 
@@ -1134,6 +1172,8 @@ class Selene(App):
 
     def action_save(self) -> None:
         if self._modal():
+            if hasattr(self.screen, "action_save"):  # e.g. the preferences dialog
+                self.screen.action_save()
             return
         if self.current_file:
             self._write(self.current_file)

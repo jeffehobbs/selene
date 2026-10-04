@@ -31,3 +31,23 @@ def save(**changes) -> None:
         tmp.replace(target)
     except OSError:
         pass  # layout memory is a nicety; never fail over it
+
+
+def preferences_path() -> Path:
+    """The player's additions to the model's system prompt, next to settings."""
+    return path().with_name("preferences.md")
+
+
+def load_preferences() -> str:
+    try:
+        return preferences_path().read_text()
+    except OSError:
+        return ""
+
+
+def save_preferences(text: str) -> None:
+    target = preferences_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".tmp")
+    tmp.write_text(text.rstrip() + "\n" if text.strip() else "")
+    tmp.replace(target)

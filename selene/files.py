@@ -8,7 +8,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, DirectoryTree, Input, Label, Static
+from textual.widgets import Button, DirectoryTree, Input, Label, Static, TextArea
 
 DEFAULT_DIR = Path.home() / "Documents/selene"
 SUFFIX = ".tidal"
@@ -34,7 +34,7 @@ class TidalTree(DirectoryTree):
 
 
 DIALOG_CSS = """
-PathScreen, ConfirmScreen { align: center middle; }
+PathScreen, ConfirmScreen, PrefsScreen { align: center middle; }
 #dialog { width: 72; height: auto; max-height: 80%; padding: 1 2;
           border: round $accent; background: $surface; }
 #dialog TidalTree { height: 16; margin-top: 1; }
@@ -114,3 +114,52 @@ class ConfirmScreen(ModalScreen[bool]):
 
     def action_cancel(self) -> None:
         self.dismiss(False)
+
+
+class PrefsScreen(ModalScreen[str | None]):
+    """Edit the player's preferences for the model. ctrl+s saves; esc asks
+    before throwing away unsaved changes."""
+
+    DEFAULT_CSS = DIALOG_CSS + """
+    PrefsScreen #dialog { width: 90; }
+    PrefsScreen TextArea { height: 14; }
+    """
+
+    def __init__(self, text: str):
+        super().__init__()
+        self.original = text
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog") as dialog:
+            dialog.border_title = "preferences"
+            yield TextArea(self.original, id="prefs", soft_wrap=True,
+                           placeholder="e.g. prefer 808 kits · keep it under 120 bpm · "
+                                       "lots of reverb, sparse drums")
+            with Horizontal():
+                yield Button("Cancel", id="no")
+                yield Static(classes="spacer")
+                yield Button("Save", variant="primary", id="yes")
+
+    def on_mount(self) -> None:
+        self.query_one("#prefs", TextArea).focus()
+
+    @property
+    def text(self) -> str:
+        return self.query_one("#prefs", TextArea).text
+
+    def action_save(self) -> None:
+        self.dismiss(self.text)
+
+    @on(Button.Pressed)
+    def pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "yes":
+            self.action_save()
+        else:
+            self.action_cancel()
+
+    def action_cancel(self) -> None:
+        if self.text.strip() == self.original.strip():
+            self.dismiss(None)
+            return
+        self.app.push_screen(ConfirmScreen("Discard your changes to the preferences?", "Discard"),
+                             lambda yes: yes and self.dismiss(None))

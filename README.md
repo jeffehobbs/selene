@@ -76,7 +76,7 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 
 In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/cps 0.6`,
 `/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/fade 4 [CYCLES]`,
-`/fade all`, `/stop 4`, `/take 4`, `/flow`, `/split 30` (the log's share of the width; `/split`
+`/fade all`, `/stop 4`, `/take 4`, `/prefs`, `/prefer TEXT`, `/flow`, `/split 30` (the log's share of the width; `/split`
 resets), `/save [NAME]`, `/open [NAME]`, `/model NAME`, `/new` are commands.
 The split and whether the lanes are showing are remembered between launches
 (`~/.local/share/selene/settings.json`).
@@ -100,6 +100,13 @@ Files live in `~/Documents/selene` unless you pass `--dir`; a bare name means
 `NAME.tidal` there. The editor's title shows the open file, with `•` when it
 has unsaved changes. Replacing a different file, or opening over edits that
 are neither saved nor playing, asks first.
+
+**Your preferences.** `/prefer prefer 808 kits` adds a line to your
+preferences; `/prefs` opens them all for editing (`ctrl+s` saves). They're
+appended to the model's system prompt, last so they win over its defaults,
+for prompts and Flow's rewrites alike, from the next request on. They live
+in `~/.local/share/selene/preferences.md`; the built-in prompt (sound lists,
+syntax rules) stays as it is.
 
 Edits you make in the editor are the base for your next prompt even if you
 haven't played them yet, so you can sketch a change and ask the model to run

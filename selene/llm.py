@@ -78,10 +78,15 @@ SuperDirt synths: {synths}
 """
 
 
-def build_system_prompt(samples: list[str], synths: list[str]) -> str:
+def build_system_prompt(samples: list[str], synths: list[str], preferences: str = "") -> str:
     # str.replace, not format: the mini-notation examples contain braces.
-    return (SYSTEM_PROMPT.replace("{samples}", " ".join(samples))
-            .replace("{synths}", " ".join(synths)))
+    prompt = (SYSTEM_PROMPT.replace("{samples}", " ".join(samples))
+              .replace("{synths}", " ".join(synths)))
+    if preferences.strip():
+        # Last, so they win over the defaults above.
+        prompt += ("\nThe player's preferences (follow these unless a request says "
+                   f"otherwise):\n{preferences.strip()}\n")
+    return prompt
 
 
 def user_message(prompt: str, current_code: str, unplayed_edits: str = "",
