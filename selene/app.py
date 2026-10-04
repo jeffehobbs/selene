@@ -8,11 +8,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from rich.segment import Segment
 from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
+from textual.strip import Strip
 from textual.widgets import Footer, Input, RichLog, Static, TextArea
 
 from . import blocks, catalog
@@ -59,6 +61,32 @@ class Held:
     """A layer still playing in Tidal that the current code doesn't mention."""
     stmt: str | None  # None: heard on the tap, but not from code selene ran
     source: str  # where it came from, for the chip's tooltip
+
+
+class PatternEditor(TextArea):
+    """The pattern editor, with line numbers zero-padded to at least two
+    digits (01, 02 … 10) so the code doesn't shift right when it reaches
+    line 10."""
+
+    DIGITS = 2
+
+    @property
+    def gutter_width(self) -> int:
+        width = super().gutter_width
+        return max(width, self.DIGITS + 2) if self.show_line_numbers else width
+
+    def render_line(self, y: int) -> Strip:
+        strip = super().render_line(y)
+        if not self.show_line_numbers:
+            return strip
+        segments = list(strip)
+        digits = self.gutter_width - 2
+        if segments and segments[0].text[:digits].strip().isdigit():
+            first = segments[0]
+            number = first.text[:digits].strip().zfill(digits)
+            segments[0] = Segment(number + first.text[digits:], first.style, first.control)
+            return Strip(segments, strip.cell_length)
+        return strip
 
 
 class Draft:
@@ -211,8 +239,8 @@ class Selene(App):
         yield Lanes(self.lane_model, self.clock, OrbitChip, id="lanes")
         with Horizontal(id="main"):
             yield RichLog(id="log", wrap=True, markup=True, max_lines=2000)
-            yield TextArea("", id="code", show_line_numbers=True, tab_behavior="indent",
-                           soft_wrap=False)
+            yield PatternEditor("", id="code", show_line_numbers=True, tab_behavior="indent",
+                                soft_wrap=False)
         yield PromptInput(placeholder="describe some music…  (!code runs raw Tidal)",
                           id="prompt")
         yield Footer()
