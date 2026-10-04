@@ -61,6 +61,49 @@ class Held:
     source: str  # where it came from, for the chip's tooltip
 
 
+class Draft:
+    """Streams a model reply into the editor a whole line at a time.
+
+    Lines are appended, never reloaded, so nothing above them repaints or
+    scrolls. Only code is shown (see blocks.CodeStream). The editor is
+    read-only with the cursor hidden while drafting, and the previous text
+    (e.g. the last fix attempt) stays up until the first new line arrives.
+    """
+
+    def __init__(self, editor: TextArea):
+        self.editor = editor
+        self.stream = blocks.CodeStream()
+        self.lines = 0
+        editor.read_only = True
+        editor.show_cursor = False
+        editor.add_class("drafting")
+
+    def add(self, chunk: str) -> None:
+        for line in self.stream.feed(chunk):
+            self._append(line)
+
+    def _append(self, line: str) -> None:
+        editor = self.editor
+        if self.lines == 0:
+            editor.load_text(line)
+        else:
+            editor.insert("\n" + line, editor.document.end, maintain_selection_offset=False)
+        self.lines += 1
+        editor.scroll_end(animate=False)
+
+    def close(self, code: str | None = None) -> None:
+        """Done streaming. If the final code differs from what was drawn (rare:
+        e.g. several fenced blocks), show the final code."""
+        for line in self.stream.finish():
+            self._append(line)
+        editor = self.editor
+        if code is not None and editor.text.strip() != code.strip():
+            editor.load_text(code)
+        editor.read_only = False
+        editor.show_cursor = True
+        editor.remove_class("drafting")
+
+
 class OrbitChip(Static):
     """A clickable dN in the status bar: click mutes/unmutes, shift-click solos."""
 
@@ -96,6 +139,7 @@ class Selene(App):
     #code.playing { border: round $success; }
     #code.failed { border: round $error; }
     #code.busy { border: round $warning; }
+    #code.drafting { color: $text-muted; }
     #log { width: 1fr; border: round $primary 50%; padding: 0 1; overflow-x: hidden;
            scrollbar-size-vertical: 1; }
     #prompt { border: round $accent; }
@@ -613,18 +657,21 @@ class Selene(App):
             self._set(llm="thinking…" if attempt == 0 else f"fixing ({attempt})…")
             self._code_state("busy")
             reply = ""
+            draft = Draft(editor)
             try:
                 async for chunk in self.ollama.chat(messages):
                     reply += chunk
-                    editor.text = self.model_text = reply
-                    editor.scroll_end(animate=False)
+                    draft.add(chunk)
+                    self.model_text = editor.text
             except Exception as e:  # noqa: BLE001 - network/model errors go to the log
                 self.log_line(f"ollama: {e}", "red")
+                draft.close()
                 self._set(llm="")
                 self._code_state("failed")
                 return
             code = blocks.extract_code(reply)
-            editor.text = self.model_text = code
+            draft.close(code)
+            self.model_text = code
             messages.append({"role": "assistant", "content": reply})
             unknown = blocks.sound_names(code) - self.known_sounds
             if unknown and attempt < self.args.fix_attempts:

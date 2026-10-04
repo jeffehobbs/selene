@@ -93,3 +93,38 @@ def test_fix_message_spots_bare_negative_arguments():
     assert "(-0.8)" in fix_message("error", 'd1 $ s "bd" # pan (range -0.8 0.8 sine)')
     assert "(-0.8)" not in fix_message("error", 'd1 $ s "bd" # pan (range (-0.8) 0.8 sine)')
     assert "(-0.8)" not in fix_message("error", 'd1 $ n "0 -1"')
+
+
+def _stream(reply, sizes):
+    """Feed a reply in chunks of the given sizes, cycling; collect lines."""
+    from selene.blocks import CodeStream
+    stream, lines, i, k = CodeStream(), [], 0, 0
+    while i < len(reply):
+        n = sizes[k % len(sizes)]
+        lines += stream.feed(reply[i:i + n])
+        i, k = i + n, k + 1
+    return lines + stream.finish()
+
+
+def test_code_stream_matches_extract_code_however_it_is_chunked():
+    from selene.blocks import extract_code
+    replies = [
+        'Here you go:\n```haskell\nsetcps (120/60/4)\n\nd1 $ s "bd*4"\n  # gain 1\n```\nEnjoy!',
+        '```haskell\n\nd1 $ s "bd"\nd2 $ n "0 3" # s "superpiano"\n```',
+        'd1 $ s "bd*2"\nd2 $ s "hh*8"',  # no fence at all
+        'Sure! A dub groove.\nd1 $ s "bd"\n',  # prose, then bare code
+        'tidal> d1 $ s "cp"\n',
+        '```\nd1 $ s "bd" -- kick\n```\n```haskell\nnot shown\n```',
+    ]
+    for reply in replies:
+        expected = extract_code(reply.split("```\n```")[0] if reply.count("```") > 2 else reply)
+        for sizes in ([1], [3, 7], [2, 11, 1, 5], [1000]):
+            assert "\n".join(_stream(reply, sizes)).strip() == expected, (reply, sizes)
+
+
+def test_code_stream_holds_back_partial_lines():
+    from selene.blocks import CodeStream
+    s = CodeStream()
+    assert s.feed("```haskell\nd1 $ s \"80") == []
+    assert s.feed("8bd*4\"\nd2") == ['d1 $ s "808bd*4"']
+    assert s.finish() == ["d2"]

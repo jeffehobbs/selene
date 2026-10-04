@@ -15,10 +15,14 @@ FENCE = re.compile(r"```[a-zA-Z]*[ \t]*\n(.*?)```", re.S)
 
 
 def extract_code(reply: str) -> str:
-    """Pull Tidal code out of a model reply: fenced blocks if any, else the text."""
+    """Pull Tidal code out of a model reply: fenced blocks if any, else the
+    text from its first line that looks like Tidal (prose before it dropped,
+    the same rule the editor uses while the reply streams in)."""
     fenced = FENCE.findall(reply)
-    text = "\n\n".join(fenced) if fenced else reply.replace("```", "")
-    lines = [ln.rstrip() for ln in text.strip().splitlines()]
+    if not fenced:
+        stream = CodeStream()
+        return "\n".join(stream.feed(reply.replace("```", "")) + stream.finish()).strip()
+    lines = [ln.rstrip() for ln in "\n\n".join(fenced).strip().splitlines()]
     lines = [re.sub(r"^tidal>\s?", "", ln) for ln in lines]
     return "\n".join(lines).strip()
 
@@ -138,3 +142,54 @@ def statement_for(code: str, orbit: str) -> str | None:
     found = [s for s in split_statements(code)
              if ORBIT_STMT.match(s) and s.split("$", 1)[0].strip() == orbit]
     return found[-1] if found else None
+
+
+# ── streaming ─────────────────────────────────────────────────────────────
+
+CODE_START = re.compile(r"^(?:tidal>\s*)?(d\d{1,2}\b|setcps\b|hush\b|xfadeIn\b|once\b|solo\b|"
+                        r"unsolo\b|let\b|--)")
+
+
+class CodeStream:
+    """A model reply as it streams in -> whole lines of code, as they complete.
+
+    Shows only what `extract_code` will keep: the opening fence and any prose
+    before it are skipped, and the stream ends at the closing fence. A reply
+    with no fence counts as code from its first line that looks like Tidal.
+    Holding back the partial line means nothing is drawn half-typed.
+    """
+
+    def __init__(self):
+        self.buffer = ""
+        self.state = "before"  # before -> code -> done
+        self.started = False  # past any blank lines at the top of the code
+
+    def feed(self, chunk: str) -> list[str]:
+        self.buffer += chunk
+        lines = []
+        while "\n" in self.buffer and self.state != "done":
+            line, self.buffer = self.buffer.split("\n", 1)
+            lines += self._line(line)
+        return lines
+
+    def finish(self) -> list[str]:
+        rest, self.buffer = self.buffer, ""
+        return self._line(rest) if rest.strip() and self.state != "done" else []
+
+    def _line(self, line: str) -> list[str]:
+        stripped = line.strip()
+        if self.state == "before":
+            if stripped.startswith("```"):
+                self.state = "code"
+                return []
+            if not CODE_START.match(stripped):
+                return []  # prose before the code
+            self.state = "code"
+        elif stripped.startswith("```"):
+            self.state = "done"
+            return []
+        line = re.sub(r"^tidal>\s?", "", line.rstrip())
+        if not self.started and not line.strip():
+            return []
+        self.started = True
+        return [line]
