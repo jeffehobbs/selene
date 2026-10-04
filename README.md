@@ -74,8 +74,18 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 | shift-click `dN` | solo that orbit (again to un-solo) |
 
 In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/cps 0.6`,
-`/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/flow`, `/save [NAME]`,
-`/open [NAME]`, `/model NAME`, `/new` are commands.
+`/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/fade 4`, `/stop 4`,
+`/take 4`, `/flow`, `/save [NAME]`, `/open [NAME]`, `/model NAME`, `/new` are
+commands.
+
+**Held layers.** Like Tidal itself, playing new code doesn't stop layers it
+doesn't mention: open a file with `d1`–`d3` over one with `d1`–`d6` and
+`d4`–`d6` keep going, DJ-style. They stay in the lanes below a *held* divider
+(amber chips; hover for where they came from), mute and solo like any layer,
+and the model knows they're there. `/fade 4` crossfades one out over 8
+cycles, `/stop 4` cuts it on the next cycle, `/fade held` / `/stop held` do
+all of them, and `/take 4` pulls its code back into the editor to work on.
+Anything selene hears playing that it didn't start gets a held lane too.
 
 Files live in `~/Documents/selene` unless you pass `--dir`; a bare name means
 `NAME.tidal` there. The editor's title shows the open file, with `•` when it

@@ -84,7 +84,17 @@ def build_system_prompt(samples: list[str], synths: list[str]) -> str:
             .replace("{synths}", " ".join(synths)))
 
 
-def user_message(prompt: str, current_code: str, unplayed_edits: str = "") -> str:
+def user_message(prompt: str, current_code: str, unplayed_edits: str = "",
+                 held: str = "") -> str:
+    message = _user_message(prompt, current_code, unplayed_edits)
+    if held.strip():
+        message = (f"Also still playing from earlier code (held layers). Leave them out "
+                   f"of your reply unless the request is about them; to stop one, write "
+                   f"`dN silence`:\n```haskell\n{held.strip()}\n```\n\n{message}")
+    return message
+
+
+def _user_message(prompt: str, current_code: str, unplayed_edits: str = "") -> str:
     if unplayed_edits.strip():
         playing = (f"Currently playing:\n```haskell\n{current_code.strip()}\n```\n\n"
                    if current_code.strip() else "")

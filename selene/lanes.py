@@ -45,6 +45,7 @@ class LaneModel:
         self.pending: list[tuple[float, str, Hit]] = []
         self.hits: dict[str, list[Hit]] = {}
         self.last_hit: dict[str, float] = {}
+        self.last_event: dict[str, float] = {}  # any event, audible or not
         # orbit -> {sound label: (cycle last heard, color)}
         self.sounds: dict[str, dict[str, tuple[float, str]]] = {}
 
@@ -80,6 +81,7 @@ class LaneModel:
         self.pending = [p for p in self.pending if p[0] > now]
         for t, orbit, hit in due:
             self.hits.setdefault(orbit, []).append(hit)
+            self.last_event[orbit] = max(t, self.last_event.get(orbit, 0))
             if hit.level > 1e-3:
                 self.last_hit[orbit] = t
 
@@ -155,12 +157,14 @@ class Lanes(Vertical):
     Lanes > Horizontal { height: 1; }
     Lanes OrbitChip { width: 5; margin: 0 1 0 0; }
     Lanes #ruler { height: 1; color: $text-muted; }
+    Lanes .held-divider { height: 1; color: $warning 60%; }
     """
 
     def __init__(self, model: LaneModel, clock, chip_factory, **kwargs):
         super().__init__(**kwargs)
         self.model, self.clock, self.chip_factory = model, clock, chip_factory
         self.orbits: list[str] = []
+        self.held: set[str] = set()
         self.chips: list = []
 
     def compose(self) -> ComposeResult:
@@ -170,14 +174,20 @@ class Lanes(Vertical):
         self.border_title = "lanes"
         self.set_interval(1 / 30, self.tick)
 
-    def set_orbits(self, orbits: list[str]) -> list:
-        """Rebuild rows if the orbits changed; returns the row chips."""
-        if orbits != self.orbits:
-            self.orbits = list(orbits)
-            for row in list(self.query("Lanes > Horizontal")):
+    def set_orbits(self, orbits: list[str], held: set[str] = frozenset()) -> list:
+        """Rebuild rows if the orbits changed; held ones go below a divider.
+        Returns the row chips."""
+        held = set(held) & set(orbits)
+        if orbits != self.orbits or held != self.held:
+            self.orbits, self.held = list(orbits), held
+            for row in list(self.query("Lanes > Horizontal, Lanes > .held-divider")):
                 row.remove()
             self.chips = [self.chip_factory(orbit) for orbit in orbits]
+            divided = False
             for orbit, chip in zip(orbits, self.chips):
+                if orbit in held and not divided and len(held) < len(orbits):
+                    self.mount(Static("╌" * 6 + " held", classes="held-divider"))
+                    divided = True
                 self.mount(Horizontal(chip, LaneStrip(self.model, orbit, self.clock)))
         return list(self.chips)
 

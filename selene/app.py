@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -53,6 +54,13 @@ class PromptInput(Input):
         self.cursor_position = len(self.value)
 
 
+@dataclass
+class Held:
+    """A layer still playing in Tidal that the current code doesn't mention."""
+    stmt: str | None  # None: heard on the tap, but not from code selene ran
+    source: str  # where it came from, for the chip's tooltip
+
+
 class OrbitChip(Static):
     """A clickable dN in the status bar: click mutes/unmutes, shift-click solos."""
 
@@ -79,6 +87,9 @@ class Selene(App):
     OrbitChip.muted { color: $text-muted; background: $error 15%; text-style: strike; }
     OrbitChip.muted:hover { background: $error 30%; }
     OrbitChip.hit { background: $success 60%; color: $text; }
+    OrbitChip.held { color: $warning; background: $warning 12%; text-style: italic; }
+    OrbitChip.held.hit { background: $warning 45%; }
+    OrbitChip.fading { text-style: italic dim; }
     #main { height: 1fr; }
     #code { width: 1fr; border: round $primary 50%; }
     #code, #log { border-title-color: $text-muted; }
@@ -111,7 +122,14 @@ class Selene(App):
         self.system_prompt = build_system_prompt(catalog.sample_banks(), catalog.synth_names())
         self.known_sounds = set(catalog.sample_banks()) | set(catalog.synth_names())
         self.history: list[dict] = []
-        self.playing_code = ""
+        self.playing_code = ""  # the current layers: what the editor last played
+        # Layers Tidal keeps playing that the current code doesn't mention
+        # (e.g. from a file opened before this one): orbit -> Held.
+        self.held: dict[str, Held] = {}
+        self.current_label = "earlier code"
+        self.fading: dict[str, object] = {}  # orbit -> token of its pending fade
+        self.last_known: dict[str, float] = {}  # orbit -> when selene last tracked it
+        self._known_prev: set[str] = set()
         self.muted: set[str] = set()
         self.last_prompt = ""
         self.fresh = False  # next prompt ignores what's playing
@@ -161,6 +179,7 @@ class Selene(App):
         self.query_one("#prompt").focus()
         self._render_bar()
         self.start_services()
+        self.set_interval(1.0, self._discover)
 
     # ── status ────────────────────────────────────────────────────────────
 
@@ -181,7 +200,13 @@ class Selene(App):
             bar.append(f"  {s['llm']}", style="italic yellow")
         if s["flow"]:
             bar.append(f"   ☯{self.flow_depth} {s['flow']}", style="magenta")
-        orbits = blocks.sounding_orbits(self.playing_code)
+        orbits = self._all_orbits()
+        # Remember when each layer was last tracked, including the moment one
+        # stops being tracked (see _discover).
+        now = time.time()
+        for orbit in self._known_prev | set(orbits):
+            self.last_known[orbit] = now
+        self._known_prev = set(orbits)
         lanes = self.lanes_on and bool(orbits)
         if orbits and not lanes:
             bar.append("   ▶", style="green")
@@ -198,17 +223,46 @@ class Selene(App):
             box.remove_children()
             chips = [OrbitChip(o) for o in orbits]
             box.mount(*chips)
-        chips += self.query_one("#lanes", Lanes).set_orbits(orbits)
+        chips += self.query_one("#lanes", Lanes).set_orbits(orbits, set(self.held))
         for chip in chips:
             chip.set_muted(chip.orbit in self.muted)
+            chip.set_class(chip.orbit in self.held, "held")
+            chip.set_class(chip.orbit in self.fading, "fading")
+            if chip.orbit in self.held:
+                n = chip.orbit[1:]
+                chip.tooltip = (f"held from {self.held[chip.orbit].source} · "
+                                f"/fade {n} · /stop {n} · /take {n}")
         # An orbit that left the code keeps its Tidal mute flag; clear it so
         # it isn't silent when the model brings it back.
         if gone := self.muted - set(orbits):
             self.muted -= gone
             self._apply_mutes({o: False for o in gone})
 
+    def _all_orbits(self) -> list[str]:
+        """Current layers first, then held ones."""
+        current = blocks.sounding_orbits(self.playing_code)
+        held = sorted((o for o in self.held if o not in current), key=lambda o: int(o[1:]))
+        return current + held
+
+    def _replace_current(self, code: str, label: str) -> None:
+        """New code becomes the current layers. Tidal keeps playing any dN the
+        new code doesn't mention, so those become held rather than vanishing."""
+        stmts = blocks.split_statements(code)
+        if any(st.strip() == "hush" for st in stmts):
+            self.held.clear()
+        mentioned = set(blocks.orbits_used(code))
+        for stmt in blocks.split_statements(self.playing_code):
+            orbits = blocks.sounding_orbits(stmt)
+            if orbits and orbits[0] not in mentioned:
+                self.held[orbits[0]] = Held(stmt, self.current_label)
+        for orbit in mentioned:
+            self.held.pop(orbit, None)
+            self.fading.pop(orbit, None)
+        self.playing_code = code
+        self.current_label = label
+
     def toggle_orbit(self, orbit: str, solo: bool = False) -> None:
-        orbits = blocks.sounding_orbits(self.playing_code)
+        orbits = self._all_orbits()
         if solo:
             soloed = self.muted == set(orbits) - {orbit}
             target = set() if soloed else set(orbits) - {orbit}
@@ -319,6 +373,8 @@ class Selene(App):
             self.run_worker(self._resolve_model(), group="services")
         elif name in ("mute", "unmute", "solo"):
             self.orbit_command(name, arg)
+        elif name in ("fade", "stop", "take"):
+            self.held_command(name, arg.strip())
         elif name == "flow":
             self.flow_command(arg.strip())
         elif name == "save":
@@ -329,10 +385,11 @@ class Selene(App):
             self.action_new_session()
         else:
             self.log_line("commands: /hush /cps N /bpm N /mute N /unmute [N] /solo N "
-                          "/flow [1-5] /save [NAME] /open [NAME] /model NAME /new", "yellow")
+                          "/fade N|held /stop N|held /take N /flow [1-5] /save [NAME] /open [NAME] "
+                          "/model NAME /new", "yellow")
 
     def orbit_command(self, name: str, arg: str) -> None:
-        orbits = blocks.sounding_orbits(self.playing_code)
+        orbits = self._all_orbits()
         wanted = [f"d{a.lstrip('d')}" for a in arg.split()]
         if name == "unmute" and not wanted:  # bare /unmute: everything
             wanted = sorted(self.muted)
@@ -345,6 +402,98 @@ class Selene(App):
         for orbit in wanted:
             if (orbit in self.muted) != (name == "mute"):
                 self.toggle_orbit(orbit)
+
+    # ── held layers ───────────────────────────────────────────────────────
+
+    def _held_code(self) -> str:
+        return "\n".join(h.stmt for h in self.held.values() if h.stmt)
+
+    def held_command(self, name: str, arg: str) -> None:
+        """/fade N|held, /stop N|held, /take N."""
+        orbits = self._all_orbits()
+        if arg == "held" and name != "take":
+            targets = [o for o in orbits if o in self.held]
+        else:
+            targets = [f"d{a.lstrip('d')}" for a in arg.split()]
+        if not targets or any(o not in orbits for o in targets):
+            held = " ".join(o for o in orbits if o in self.held) or "none"
+            self.log_line(f"playing: {' '.join(orbits) or 'none'} · held: {held}", "yellow")
+            return
+        if name == "take":
+            self._take(targets[0])
+        else:
+            self._release(targets, fade=name == "fade")
+
+    def _take(self, orbit: str) -> None:
+        """A held layer's code back into the editor; it's current again."""
+        held = self.held.get(orbit)
+        if held is None:
+            self.log_line(f"{orbit} isn't held", "yellow")
+        elif held.stmt is None:
+            self.log_line(f"{orbit} wasn't started by selene, so there's no code to take", "yellow")
+        elif self._editor_dirty():
+            self.log_line("play or save your edits first (ctrl+e / ctrl+s), then /take", "yellow")
+        else:
+            del self.held[orbit]
+            self.playing_code = merge_layers(self.playing_code, held.stmt)
+            self.query_one("#code", TextArea).text = self.playing_code
+            self._flow_rebase(player=True)
+            self.log_line(f"took {orbit} from {held.source}", "cyan")
+            self._render_bar()
+
+    @work(group="play", exclusive=False)
+    async def _release(self, orbits: list[str], fade: bool) -> None:
+        cycles = 8
+        for orbit in orbits:
+            n = int(orbit[1:])
+            code = f"xfadeIn {n} {cycles} $ silence" if fade else f"{orbit} silence"
+            result = await self.ghci.eval(code)
+            if not result.ok:
+                continue
+            if fade:
+                token = object()
+                self.fading[orbit] = token
+                seconds = cycles / (self.clock.cps or 0.5625) + 0.3
+                self.set_timer(seconds, lambda o=orbit, t=token: self._gone(o, t))
+                self.log_line(f"fading {orbit} out over {cycles} cycles", "magenta")
+            else:
+                self._gone(orbit, None)
+                self.log_line(f"stopped {orbit}", "magenta")
+        self._render_bar()
+
+    def _gone(self, orbit: str, token) -> None:
+        """A layer finished fading or was stopped: it's no longer playing."""
+        if token is not None and self.fading.get(orbit) is not token:
+            return  # re-taken or replaced since
+        self.fading.pop(orbit, None)
+        if self.held.pop(orbit, None) is None and orbit in blocks.sounding_orbits(self.playing_code):
+            clean = not self._editor_dirty()
+            self.playing_code = merge_layers(self.playing_code, f"{orbit} silence")
+            if clean:
+                self.query_one("#code", TextArea).text = self.playing_code
+            self._flow_rebase(player=False)
+        self._render_bar()
+
+    def _discover(self) -> None:
+        """Safety net: any orbit heard on the tap gets a lane, even if selene
+        didn't start it (or lost track of it). A layer selene just stopped
+        still has ~0.15 s of events in flight, so an unknown orbit only counts
+        if it's heard well after selene last knew of it."""
+        now = time.time()
+        known = set(self._all_orbits())
+        phrase_seconds = 4 / (self.clock.cps or 0.5625)
+        changed = False
+        for orbit, t in self.lane_model.last_event.items():
+            if orbit not in known and t > self.last_known.get(orbit, 0) + 1.0 and now - t < 2:
+                self.held[orbit] = Held(None, "outside selene")
+                changed = True
+        for orbit, held in list(self.held.items()):
+            quiet = now - self.lane_model.last_event.get(orbit, 0) > 2 * phrase_seconds
+            if held.stmt is None and quiet and orbit not in self.muted:
+                del self.held[orbit]
+                changed = True
+        if changed:
+            self._render_bar()
 
     async def _resolve_model(self) -> None:
         try:
@@ -389,6 +538,8 @@ class Selene(App):
             self._flow_stop(log=False)
         await self.ghci.hush()
         self.playing_code = ""
+        self.held.clear()
+        self.fading.clear()
         self.muted.clear()
         self._code_state(None)
         self.log_line("hush", "magenta")
@@ -420,12 +571,18 @@ class Selene(App):
         result = await self.ghci.eval(self._wrap(code))
         if result.ok:
             if source == "editor":
-                self.playing_code = code
+                label = self.current_file.name if self.current_file else "the editor"
+                self._replace_current(code, label)
             elif source == "raw":
                 editor = self.query_one("#code", TextArea)
                 clean = not self._editor_dirty()
-                self.playing_code = ("" if code.strip() == "hush"
-                                     else merge_layers(self.playing_code, code))
+                if code.strip() == "hush":
+                    self.playing_code = ""
+                    self.held.clear()
+                else:
+                    self.playing_code = merge_layers(self.playing_code, code)
+                    for orbit in blocks.orbits_used(code):  # it's current now
+                        self.held.pop(orbit, None)
                 if clean:  # keep the editor showing what plays, unless mid-edit
                     editor.text = self.playing_code
             self._code_state("playing")
@@ -446,7 +603,8 @@ class Selene(App):
         self.fresh = False
         messages = [{"role": "system", "content": self.system_prompt}]
         messages += [{"role": m["role"], "content": m["content"]} for m in self.history]
-        messages.append({"role": "user", "content": user_message(prompt, context, edits)})
+        messages.append({"role": "user", "content": user_message(prompt, context, edits,
+                                                                 held=self._held_code())})
         if edits:
             self.log_line("(building on your unplayed edits)", "dim cyan")
         self.log_line(f"» {prompt}", "bold cyan")
@@ -485,7 +643,7 @@ class Selene(App):
             self._code_state("failed")
             self.log_line("still failing; edit the pattern and press ctrl+e, or ctrl+r", "red")
             return
-        self.playing_code = code
+        self._replace_current(code, "a prompt")
         self._code_state("playing")
         self.history += [{"role": "user", "content": prompt, "prompt": prompt},
                          {"role": "assistant", "content": f"```haskell\n{code}\n```"}]
