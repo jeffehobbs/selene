@@ -47,11 +47,14 @@ class Ghci:
     def running(self) -> bool:
         return self.proc is not None and self.proc.returncode is None
 
-    async def start(self, timeout: float = 90, ctrl_port: int | None = None) -> EvalResult:
+    async def start(self, timeout: float = 90, ctrl_port: int | None = None,
+                    tap_port: int | None = None) -> EvalResult:
         env = dict(os.environ)
         if ctrl_port:
             self.ctrl_port = ctrl_port
             env["SELENE_CTRL_PORT"] = str(ctrl_port)
+        if tap_port:
+            env["SELENE_TAP_PORT"] = str(tap_port)
         self.proc = await asyncio.create_subprocess_exec(
             self.ghci, "-ghci-script", str(self.boot), env=env,
             stdin=asyncio.subprocess.PIPE,

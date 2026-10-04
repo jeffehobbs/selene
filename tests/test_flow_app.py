@@ -11,6 +11,28 @@ from selene.app import Selene, parse_args
 CODE = 'setcps 1\nd1 $ s "bd*8"\nd2 $ s "cp*8" # gain 0.8'
 
 
+class NoModel:
+    """Flow's layer rewrites have their own end-to-end test; here the model
+    stays out of it so what plays is exactly what the test wrote."""
+    model = "none"
+
+    async def resolve_model(self):
+        return "none"
+
+    async def chat(self, messages):
+        raise RuntimeError("no model in this test")
+        yield  # pragma: no cover
+
+    async def close(self):
+        pass
+
+
+def make_app(*extra):
+    app = Selene(parse_args(["--boot", str(TEST_BOOT), *extra]))
+    app.ollama = NoModel()
+    return app
+
+
 async def wait_for(cond, timeout: float, step: float = 0.1) -> bool:
     for _ in range(int(timeout / step)):
         if cond():
@@ -29,7 +51,7 @@ async def window(fake_dirt, seconds: float = 1.0) -> list[dict]:
 @needs_ghci
 async def test_flow_toggles_and_glides_home(fake_dirt, monkeypatch):
     monkeypatch.setattr(app_module, "FLOW_SPEED", 20.0)  # 20 s of Flow per second
-    app = Selene(parse_args(["--boot", str(TEST_BOOT)]))
+    app = make_app()
     async with app.run_test(size=(120, 30)) as pilot:
         assert await wait_for(lambda: app.state["ghci"] == "ready", 60)
         app.evaluate(CODE, source="editor")
@@ -70,7 +92,7 @@ async def test_flow_toggles_and_glides_home(fake_dirt, monkeypatch):
 @needs_ghci
 async def test_hush_turns_flow_off(fake_dirt, monkeypatch):
     monkeypatch.setattr(app_module, "FLOW_SPEED", 20.0)
-    app = Selene(parse_args(["--boot", str(TEST_BOOT)]))
+    app = make_app()
     async with app.run_test(size=(120, 30)) as pilot:
         assert await wait_for(lambda: app.state["ghci"] == "ready", 60)
         app.evaluate(CODE, source="editor")
@@ -81,3 +103,51 @@ async def test_hush_turns_flow_off(fake_dirt, monkeypatch):
         assert await wait_for(lambda: app.flow is None and app.state["flow"] == "", 5)
         assert not app.flow_on
         await app.action_quit()
+
+
+@needs_ghci
+async def test_deep_flow_drops_land_on_phrase_boundaries(fake_dirt, monkeypatch):
+    """Depth 5: whole layers drop out on multiples of 4 cycles, as heard by SuperDirt."""
+    monkeypatch.setattr(app_module, "FLOW_SPEED", 30.0)
+    import selene.flow
+    monkeypatch.setattr(selene.flow, "EVENT_PERIODS", {"drop": 47})  # only drops, to measure them
+    app = make_app("--flow-depth", "5")
+    # 64 events a cycle: even heavily thinned, a layer is never silent by chance.
+    code = 'setcps 1\nd1 $ s "bd*64"\nd2 $ s "hh*64"\nd3 $ s "cp*64"'
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(lambda: app.state["ghci"] == "ready", 60)
+        app.evaluate(code, source="editor")
+        assert await wait_for(lambda: app.clock.known, 10), "no events on the tap"
+        await pilot.press("ctrl+f")
+        await asyncio.sleep(0.5)
+        fake_dirt.clear()
+        await asyncio.sleep(40)
+        events = fake_dirt.events()
+        await app.action_quit()
+
+    # A drop sends events at gain 0. A change is sent a frame (~60 ms) early
+    # so it always catches the boundary, so a few events at the very end of
+    # the previous cycle may already have it: a cycle counts as heard when
+    # most of its events are audible.
+    counts: dict[tuple[str, int], list[int]] = {}
+    for e in events:
+        tally = counts.setdefault((e["s"], int(e["cycle"] + 1e-6)), [0, 0])
+        tally[0] += 1
+        tally[1] += e.get("gain", 1) > 1e-3
+    heard: dict[str, set[int]] = {}
+    for (sound, cycle), (total, audible) in counts.items():
+        heard.setdefault(sound, set())
+        if audible > total / 2:
+            heard[sound].add(cycle)
+    cycles = range(min(min(c) for c in heard.values()) + 1, max(max(c) for c in heard.values()))
+    drops = 0
+    for sound, present in heard.items():
+        run = []
+        for c in cycles:
+            if c not in present:
+                run.append(c)
+            elif run:
+                assert run[0] % 4 == 0 and len(run) % 4 == 0, (sound, run)
+                drops += 1
+                run = []
+    assert drops >= 2, f"expected drops in 40 cycles at depth 5; heard {heard}"

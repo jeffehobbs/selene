@@ -16,6 +16,11 @@ default (Rational, Integer, Double, Pattern String)
 -- another Tidal instance holding the default 6010.
 seleneCtrlPort <- maybe 6010 read <$> Env.lookupEnv "SELENE_CTRL_PORT" :: IO Int
 
-tidalInst <- mkTidalWith [(superdirtTarget, [superdirtShape])] (defaultConfig {cCtrlPort = seleneCtrlPort})
+-- A copy of every event goes to selene's tap so Flow knows where the cycle
+-- is and can land changes exactly on the beat.
+seleneTapPort <- maybe 0 read <$> Env.lookupEnv "SELENE_TAP_PORT" :: IO Int
+seleneTap = [(superdirtTarget {oName = "selene", oPort = seleneTapPort, oBusPort = Nothing, oHandshake = False}, [superdirtShape]) | seleneTapPort > 0]
+
+tidalInst <- mkTidalWith ((superdirtTarget, [superdirtShape]) : seleneTap) (defaultConfig {cCtrlPort = seleneCtrlPort})
 
 instance Tidally where tidal = tidalInst

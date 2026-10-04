@@ -89,9 +89,11 @@ ORBIT_STMT = re.compile(r"^d(\d{1,2})\s*\$\s*(.*)$", re.S)
 def flowify(code: str) -> str:
     """Route every `dN $ ...` through Flow's per-orbit controls (see flow.py).
 
-    At their defaults the controls are inaudible: gain x1, djf 0.5, room +0,
-    degradeBy 0. The closing paren goes on its own line so an inline comment in
-    the model's code can't swallow it.
+    At their defaults the controls are inaudible: rate 1, rot 0, ply 1, rev
+    off, degradeBy 0, gain x1, djf 0.5, room +0, and color that only fills in
+    shape/crush/delay the model didn't set (`|<` keeps the model's values).
+    The closing paren goes on its own line so an inline comment in the
+    model's code can't swallow it.
     """
     out = []
     for stmt in split_statements(code):
@@ -100,10 +102,16 @@ def flowify(code: str) -> str:
             out.append(stmt)
             continue
         n, body = m.groups()
+        c = lambda name: f'"fl_{name}{n}"'  # noqa: E731
         out.append(
-            f'd{n} $ degradeBy (cF 0 "fl_thin{n}") $ ({body}\n'
-            f'  ) |* gain (cF 1 "fl_gain{n}") # djf (cF 0.5 "fl_tone{n}")'
-            f' |+ room (cF 0 "fl_space{n}")')
+            f"d{n} $ fast (toRational <$> cF 1 {c('rate')}) $ rot (cI 0 {c('rot')})"
+            f" $ ply (toRational <$> cF 1 {c('ply')}) $ sometimesBy (cF 0 {c('rev')}) rev"
+            f" $ degradeBy (cF 0 {c('thin')}) $ ({body}\n"
+            f"  ) |* gain (cF 1 {c('gain')}) |* gain (cF 1 {c('gate')})"
+            f" # djf (cF 0.5 {c('tone')}) |+ room (cF 0 {c('space')})"
+            f" |< shape (cF 0 {c('drive')}) |< crush (cF 16 {c('crush')})"
+            f" |< delay (cF 0 {c('send')}) |+ delay (cF 0 {c('throw')})"
+            f" |< delaytime (cF 0.375 \"fl_dtime\") |< delayfeedback 0.45")
     return "\n".join(out)
 
 

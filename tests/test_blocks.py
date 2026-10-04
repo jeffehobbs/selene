@@ -67,8 +67,9 @@ def test_flowify_wraps_orbits_only():
     code = 'setcps 0.5\nd1 $ s "bd*4" # gain 0.9 -- kick\nd2 silence\nd3 $ silence'
     out = flowify(code).split("\n")
     assert out[0] == "setcps 0.5"
-    assert out[1] == 'd1 $ degradeBy (cF 0 "fl_thin1") $ (s "bd*4" # gain 0.9 -- kick'
-    assert out[2].startswith('  ) |* gain (cF 1 "fl_gain1")')
+    assert out[1].startswith('d1 $ fast (toRational <$> cF 1 "fl_rate1")')
+    assert out[1].endswith('$ (s "bd*4" # gain 0.9 -- kick')
+    assert out[2].startswith('  ) |* gain (cF 1 "fl_gain1") |* gain (cF 1 "fl_gate1")')
     assert out[3:] == ["d2 silence", "d3 $ silence"]
 
 
@@ -85,3 +86,10 @@ def test_user_message_marks_unplayed_edits():
     msg = user_message("add hats", 'd1 $ s "bd"', 'd1 $ s "bd*2"')
     assert "not played it yet" in msg and 'd1 $ s "bd*2"' in msg and 'd1 $ s "bd"' in msg
     assert "edited" not in user_message("add hats", 'd1 $ s "bd"')
+
+
+def test_fix_message_spots_bare_negative_arguments():
+    from selene.llm import fix_message
+    assert "(-0.8)" in fix_message("error", 'd1 $ s "bd" # pan (range -0.8 0.8 sine)')
+    assert "(-0.8)" not in fix_message("error", 'd1 $ s "bd" # pan (range (-0.8) 0.8 sine)')
+    assert "(-0.8)" not in fix_message("error", 'd1 $ n "0 -1"')

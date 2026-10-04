@@ -16,7 +16,8 @@ from textual.widgets import Footer, Input, RichLog, Static, TextArea
 
 from . import blocks, catalog
 from .files import DEFAULT_DIR, ConfirmScreen, PathScreen, resolve
-from .flow import CtrlSender, FlowDirector, ctrl_name, free_udp_port
+from .flow import (DEFAULT_DEPTH, DEPTHS, CtrlSender, FlowDirector, TidalClock, ctrl_name,
+                   free_udp_port)
 from .ghci import BUNDLED_BOOT, Ghci
 from .llm import (Ollama, build_system_prompt, evolve_message, fix_message,
                   unknown_sounds_message, user_message)
@@ -24,7 +25,6 @@ from .superdirt import SuperDirt, dirt_status
 
 SESSIONS = Path.home() / ".local/share/selene"
 HISTORY_TURNS = 4  # prompt/reply pairs of context sent back to the model
-XFADE_CYCLES = 16  # how long an evolved layer takes to crossfade in
 # Test hook: run Flow's clock faster than real time.
 FLOW_SPEED = float(os.environ.get("SELENE_FLOW_SPEED", "1"))
 
@@ -124,6 +124,12 @@ class Selene(App):
         self.flow_ctrl: CtrlSender | None = None
         self.flow_timer = None
         self.flow_t0 = 0.0
+        self.flow_depth = args.flow_depth
+        self.flow_pending: list[asyncio.TimerHandle] = []  # stepped sends in flight
+        self.flow_dtime_cps: float | None = None
+        # Tidal's cycle position, from the events it copies to our tap port.
+        self.clock = TidalClock()
+        self.tap_port = free_udp_port()
         # The .tidal file the editor was last saved to / opened from.
         self.current_file: Path | None = None
         self.saved_text = ""
@@ -168,7 +174,7 @@ class Selene(App):
         if s["llm"]:
             bar.append(f"  {s['llm']}", style="italic yellow")
         if s["flow"]:
-            bar.append(f"   ☯ {s['flow']}", style="magenta")
+            bar.append(f"   ☯{self.flow_depth} {s['flow']}", style="magenta")
         orbits = blocks.sounding_orbits(self.playing_code)
         if orbits:
             bar.append("   ▶", style="green")
@@ -260,7 +266,8 @@ class Selene(App):
             self.log_line(f"ollama: {e}", "red")
             self._set(model=f"{self.args.model} (unavailable)")
         try:
-            result = await self.ghci.start(ctrl_port=free_udp_port())
+            await self._listen_tap()
+            result = await self.ghci.start(ctrl_port=free_udp_port(), tap_port=self.tap_port)
         except FileNotFoundError:
             self.log_line(f"can't run {self.args.ghci!r}; install GHC + tidal", "red")
             self._set(ghci="dead")
@@ -302,7 +309,7 @@ class Selene(App):
         elif name in ("mute", "unmute", "solo"):
             self.orbit_command(name, arg)
         elif name == "flow":
-            self.action_flow()
+            self.flow_command(arg.strip())
         elif name == "save":
             self._save_as(arg.strip()) if arg.strip() else self.action_save()
         elif name == "open":
@@ -311,7 +318,7 @@ class Selene(App):
             self.action_new_session()
         else:
             self.log_line("commands: /hush /cps N /bpm N /mute N /unmute [N] /solo N "
-                          "/flow /save [NAME] /open [NAME] /model NAME /new", "yellow")
+                          "/flow [1-5] /save [NAME] /open [NAME] /model NAME /new", "yellow")
 
     def orbit_command(self, name: str, arg: str) -> None:
         orbits = blocks.sounding_orbits(self.playing_code)
@@ -456,7 +463,7 @@ class Selene(App):
             result = await self.ghci.eval(self._wrap(code))
             if result.ok:
                 break
-            messages.append({"role": "user", "content": fix_message(result.error_text)})
+            messages.append({"role": "user", "content": fix_message(result.error_text, code)})
         self._set(llm="")
 
         if not result.ok:
@@ -504,27 +511,84 @@ class Selene(App):
             self.flow_ctrl.send(name, value)
         self.flow.set_muted(self.muted, now)
 
+    async def _listen_tap(self) -> None:
+        clock = self.clock
+
+        class Tap(asyncio.DatagramProtocol):
+            def datagram_received(self, data, addr):
+                clock.feed(data, time.time())
+
+        try:
+            await asyncio.get_running_loop().create_datagram_endpoint(
+                Tap, local_addr=("127.0.0.1", self.tap_port))
+        except OSError as e:
+            self.log_line(f"flow can't hear Tidal's clock ({e}); changes won't be on the beat",
+                          "yellow")
+
+    def flow_command(self, arg: str) -> None:
+        """/flow toggles; /flow N sets the depth (and starts Flow if it's off)."""
+        if not arg:
+            self.action_flow()
+            return
+        if not arg.isdigit() or int(arg) not in DEPTHS:
+            self.log_line(f"flow depth is 1–{max(DEPTHS)} (1 = gentle drift, "
+                          f"{max(DEPTHS)} = most active)", "yellow")
+            return
+        self.flow_depth = int(arg)
+        if self.flow_on:
+            self._schedule(self.flow.set_depth(self.flow_depth, self._flow_now(), self._cycle()),
+                           cancel=True)
+            self.log_line(f"☯ flow depth {self.flow_depth}", "magenta")
+            self._render_bar()
+        else:
+            self.action_flow()
+
+    def _cycle(self) -> float | None:
+        return self.clock.cycle_at(time.time())
+
+    def _schedule(self, steps, cancel: bool = False) -> None:
+        """Send each stepped change just before Tidal processes its cycle."""
+        if cancel:  # a batch going home overrides anything still queued
+            for handle in self.flow_pending:
+                handle.cancel()
+            self.flow_pending.clear()
+        loop = asyncio.get_running_loop()
+        self.flow_pending = [h for h in self.flow_pending if not h.cancelled()]
+        for step in steps:
+            delay = self.clock.send_time(step.cycle) - time.time() if self.clock.known else 0
+            if self.flow_ctrl:
+                self.flow_pending.append(
+                    loop.call_later(max(0.0, delay), self.flow_ctrl.send, step.name, step.value))
+
+    def _update_dtime(self) -> None:
+        """Flow's delay throws echo a dotted eighth; SuperDirt wants seconds."""
+        cps = self.clock.cps
+        if cps and cps != self.flow_dtime_cps and self.flow_ctrl:
+            self.flow_dtime_cps = cps
+            self.flow_ctrl.send("fl_dtime", 0.1875 / cps)
+
     def action_flow(self) -> None:
         if self.state["ghci"] != "ready":
             self.log_line("flow waits for GHCi", "yellow")
             return
         if self.flow_on:
             self.flow_on = False
-            self.flow.start_exit(self._flow_now())
+            self._schedule(self.flow.start_exit(self._flow_now(), self._cycle()), cancel=True)
             self._set(flow="easing out")
             self.log_line("☯ flow off · easing home", "magenta")
             return
         self.flow_on = True
         if self.flow:  # still gliding home from a moment ago
             self.flow.resume(self._flow_now())
+            self.flow.set_depth(self.flow_depth, self._flow_now(), self._cycle())
         else:
-            self.flow = FlowDirector()
+            self.flow = FlowDirector(depth=self.flow_depth)
             self.flow_ctrl = CtrlSender(self.ghci.ctrl_port)
             self.flow_t0 = time.monotonic()
             self.flow_timer = self.set_interval(0.1, self._flow_tick)
         self._flow_rebase(player=False)
         self._set(flow="flow")
-        self.log_line("☯ flow on", "magenta")
+        self.log_line(f"☯ flow on · depth {self.flow_depth}", "magenta")
         if self.args.boot != str(BUNDLED_BOOT):
             self.log_line("flow needs SELENE_CTRL_PORT support in a custom --boot "
                           "(see the bundled BootTidal.hs)", "yellow")
@@ -533,6 +597,10 @@ class Selene(App):
             self.evaluate(self.playing_code, source="flow")
 
     def _flow_stop(self, log: bool = True) -> None:
+        for handle in self.flow_pending:
+            handle.cancel()
+        self.flow_pending.clear()
+        self.flow_dtime_cps = None
         for name, value in self.flow.neutral_updates():
             self.flow_ctrl.send(name, value)
         self.flow_timer.stop()
@@ -546,9 +614,11 @@ class Selene(App):
     def _flow_tick(self) -> None:
         if not self.flow:
             return
-        updates, events = self.flow.tick(self._flow_now())
+        self._update_dtime()
+        updates, steps, events = self.flow.tick(self._flow_now(), self._cycle())
         for name, value in updates:
             self.flow_ctrl.send(name, value)
+        self._schedule(steps)
         for e in events:
             if e.kind == "log":
                 self.log_line(f"flow · {e.detail}", "magenta dim")
@@ -585,7 +655,8 @@ class Selene(App):
         verb = "adding" if kind == "add" else "evolving"
         self._set(flow=f"{verb} {orbit}")
         messages = [{"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": evolve_message(self.playing_code, orbit, kind)}]
+                    {"role": "user", "content": evolve_message(self.playing_code, orbit, kind,
+                                                               bold=self.flow.depth.bold)}]
         keep_scales = blocks.scales(self.playing_code)
         stmt, ok = None, False
         for _ in range(self.args.fix_attempts + 1):
@@ -614,17 +685,19 @@ class Selene(App):
                 self.flow_ctrl.send(ctrl_name("gain", orbit), 0.0)
                 result = await self.ghci.eval(blocks.flowify(stmt))
             else:
-                result = await self.ghci.eval(blocks.as_xfade(blocks.flowify(stmt), XFADE_CYCLES))
+                result = await self.ghci.eval(
+                    blocks.as_xfade(blocks.flowify(stmt), self.flow.depth.xfade))
             if result.ok:
                 ok = True
                 break
             if kind == "add" and self.flow_ctrl:
                 self.flow_ctrl.send(ctrl_name("gain", orbit), 1.0)
-            messages.append({"role": "user", "content": fix_message(result.error_text)})
+            messages.append({"role": "user", "content": fix_message(result.error_text, stmt)})
         if self.flow:
             if ok:
                 self._adopt(stmt, f"(flow) {verb} {orbit}")
-                how = "swelling in" if kind == "add" else f"crossfading over {XFADE_CYCLES} cycles"
+                how = ("swelling in" if kind == "add"
+                       else f"crossfading over {self.flow.depth.xfade} cycles")
                 self.log_line(f"flow · {verb} {orbit}, {how}", "magenta")
             self.flow.evolved(orbit, kind, ok, self._flow_now())
             self._set(flow="flow" if self.flow_on else "easing out")
@@ -756,6 +829,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="boot SuperCollider + SuperDirt at startup if it isn't running")
     p.add_argument("--dir", default=str(DEFAULT_DIR),
                    help=f"folder for .tidal files (default: {DEFAULT_DIR})".replace(str(Path.home()), "~"))
+    p.add_argument("--flow-depth", type=int, choices=sorted(DEPTHS), default=DEFAULT_DEPTH,
+                   help=f"how active Flow is when you turn it on, 1 (gentle drift) to "
+                        f"{max(DEPTHS)} (default: {DEFAULT_DEPTH}); change live with /flow N")
     p.add_argument("--fix-attempts", type=int, default=2,
                    help="times to feed GHCi errors back to the model (default: 2)")
     return p.parse_args(argv)

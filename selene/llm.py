@@ -1,6 +1,7 @@
 """Ask a local Ollama model to write TidalCycles code."""
 
 import json
+import re
 from typing import AsyncIterator
 
 import httpx
@@ -54,6 +55,8 @@ chunk, iter, ply) wrap a pattern with `$`; they never follow `#`.
 - In `stack [...]`, separate items with commas and give each item its own `$` \
 transformations: `stack [ jux rev $ s "arpy*4", s "bd*2" ]`.
 - `n` / `note` values are numbers or note names, not sample names.
+- Negative numbers as arguments need parentheses: `range (-0.8) 0.8 sine`,
+  `# speed (-1)`. Bare `range -0.8 0.8` is subtraction and fails.
 
 Example:
 ```haskell
@@ -116,10 +119,14 @@ FIX_HINTS = {
 }
 
 
-def evolve_message(current_code: str, orbit: str, kind: str) -> str:
+def evolve_message(current_code: str, orbit: str, kind: str, bold: bool = False) -> str:
     if kind == "add":
         ask = (f"Add ONE new layer as {orbit} that complements what is playing: sparse, "
                "in the same key and scale, a different register or role from the others.")
+    elif bold:
+        ask = (f"Transform {orbit} so the change is clearly audible: a new rhythm, a "
+               "different sound from the lists, or a new transformation (every, off, jux, "
+               "chop, striate, euclid...). Keep its musical role and the key/scale.")
     else:
         ask = (f"Evolve only {orbit}: change ONE musical element subtly (rhythm placement, "
                "a note or two, a transformation, an effect amount). Keep its role, its "
@@ -129,8 +136,14 @@ def evolve_message(current_code: str, orbit: str, kind: str) -> str:
             f"{orbit} statement in one ```haskell block.")
 
 
-def fix_message(error: str) -> str:
+NEGATIVE_ARG = re.compile(r"[\w)]\s+-\d")
+
+
+def fix_message(error: str, code: str = "") -> str:
     hints = [hint for key, hint in FIX_HINTS.items() if key in error]
+    if NEGATIVE_ARG.search(re.sub(r'"[^"]*"', '""', code)):  # mini-notation may say "0 -1"
+        hints.append("A negative number is used as an argument without parentheses; "
+                     "write `(-0.8)`, e.g. `range (-0.8) 0.8 sine`.")
     hint_text = ("\nLikely cause: " + " ".join(hints)) if hints else ""
     return (f"GHCi rejected that code:\n```\n{error[-1500:]}\n```{hint_text}\n"
             "Return the corrected complete code, same musical idea. "

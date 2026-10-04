@@ -23,9 +23,9 @@ d2"*, *"half-time the drums"*, *"make it sparser"*.
 - **Mute by clicking.** Each playing orbit shows as a `d1 d2 d3` chip in the
   top bar: click to mute/unmute, shift-click to solo. Mutes survive the model
   revising the pattern; `esc` clears them.
-- **Flow mode.** `ctrl+f` lets the music play itself: levels, tone, space and
-  density ebb and flow across the layers, and every few minutes the model
-  evolves one layer, crossfaded in. Off until you turn it on. See [Flow](#flow).
+- **Flow mode.** `ctrl+f` lets the music play itself, from slow drift to
+  drops, fills and rhythm mutations on the beat, as active as you set it with
+  `/flow 1`–`5`. Off until you turn it on. See [Flow](#flow).
 - **Session log.** Every pattern that plays is appended to
   `~/.local/share/selene/<date>.tidal`.
 
@@ -58,7 +58,7 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 | `esc` | hush (also cancels a generation) |
 | `ctrl+r` | regenerate the last prompt |
 | `ctrl+n` | new context: next prompt ignores what's playing |
-| `ctrl+f` | Flow on / off |
+| `ctrl+f` | Flow on / off (`/flow 1`–`/flow 5` sets how active) |
 | `ctrl+s` | save the editor to a `.tidal` file (asks for a name the first time) |
 | `ctrl+o` | open a `.tidal` file into the editor (doesn't play it until `ctrl+e`) |
 | `ctrl+b` | boot SuperDirt |
@@ -85,29 +85,39 @@ with it.
 A mode, off at launch, in the family of
 [Thrum](https://github.com/jeffehobbs/thrum),
 [Meter](https://github.com/jeffehobbs/meter) and Counter's Flow: the music
-keeps moving so you can work inside it, and nothing announces itself.
+keeps moving on its own while you work. `ctrl+f` toggles it; `/flow N` sets
+how active it is (and starts it):
 
-- **Nothing is set, only ramped.** Every change is a 20–90 s smootherstep
-  slide (never under 9 s) with no edge at either end. Each layer's level, tone
-  and space breathe on their own prime-numbered clocks, so nothing lines up.
-- **Density is a zero-sum budget.** It moves *between* layers (transfers,
-  tilts between low and high parts, spotlights, dropouts); the total holds.
-- **Structure evolves slowly.** Every 5–11 minutes the model rewrites one
-  layer, subtly, crossfaded in over 16 cycles with Tidal's `xfadeIn`, and it
-  may add a layer that swells in from silence or fade one out.
-- **The key never moves**, and tempo stays put. A rewrite that changes the
-  scale is sent back.
-- **You lead.** Anything you prompt, play or edit becomes Flow's new
-  starting point and holds off structural changes for two minutes. Muted
-  layers are left alone.
-- **Turning Flow off** glides every control home over 12 s, leaving whatever
-  the music evolved into playing and in the editor. `esc` stops it at once.
+| depth | what moves |
+|---|---|
+| 1 | slow drift: each layer's level, tone, space and density slide over 20–90 s; nothing announces itself |
+| 2 | the same, faster and wider |
+| **3** (default) | + **color** (drive, bitcrush, delay send) and **rhythm mutations**: a layer rotates, stutters, goes half- or double-time or reverses for a phrase or two, landing on a 4-cycle boundary |
+| 4 | + **arrangement events** on the beat: drops (all but one layer fall out for a phrase, then slam back), fills, rolls, dub delay throws; the model's rewrites get bolder |
+| 5 | everything faster, wider, more often |
 
-Under the hood each `dN` is routed through per-orbit controls
-(`gain`, `djf`, `room`, `degradeBy`) that selene drives over Tidal's `/ctrl`
-OSC port, so nothing is re-evaluated to make the music move. A custom
-`--boot` file needs the `SELENE_CTRL_PORT` lines from the bundled
-`BootTidal.hs` for Flow to reach it.
+- **Continuous changes are always ramped** (smootherstep, no edge at either
+  end), each layer on its own prime-numbered clock so nothing lines up.
+- **Stepped changes land exactly on the beat.** Tidal copies every event to
+  selene, so Flow knows where the cycle is and sends each change just before
+  Tidal plays that cycle.
+- **Density is a zero-sum budget**: it moves between layers (transfers, tilts
+  between low and high parts, spotlights, dropouts); the total holds.
+- **The model evolves one layer** every 1–11 minutes depending on depth,
+  crossfaded in with `xfadeIn`; it may add a layer that swells in from
+  silence, or fade one out.
+- **Key and tempo never move.** A rewrite that changes the scale is sent back.
+- **You lead.** Anything you prompt, play or edit becomes Flow's new starting
+  point and holds off rewrites for a while. Muted layers are left alone.
+- **Turning Flow off** puts every stepped change back on the next beat and
+  glides the rest home over 12 s; what the music evolved into stays playing
+  and in the editor. `esc` stops it at once.
+
+Under the hood each `dN` is wrapped in per-orbit controls (`fast`, `rot`,
+`ply`, `rev`, `degradeBy`, `gain`, `djf`, `room`, `shape`, `crush`, `delay`)
+that selene drives over Tidal's `/ctrl` OSC port, so nothing is re-evaluated
+to make the music move. A custom `--boot` file needs the `SELENE_CTRL_PORT`
+and `SELENE_TAP_PORT` lines from the bundled `BootTidal.hs` for Flow to work.
 
 ## Options
 
@@ -118,6 +128,7 @@ OSC port, so nothing is re-evaluated to make the music move. A custom
 --boot FILE         BootTidal.hs to load (default: the bundled one)
 --superdirt         boot SuperCollider + SuperDirt if it isn't running
 --dir FOLDER        where .tidal files are saved/opened (default: ~/Documents/selene)
+--flow-depth N      how active Flow is when turned on, 1–5 (default: 3)
 --fix-attempts N    times to feed errors back to the model (default: 2)
 ```
 
