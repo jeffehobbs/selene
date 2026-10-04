@@ -20,9 +20,14 @@ d2"*, *"half-time the drums"*, *"make it sparser"*.
   SuperDirt synths you actually have, and code naming sounds you don't have is
   sent back for a fix before it plays.
 - **Everything local.** No cloud APIs; default model is `gemma4:31b-mlx`.
-- **Mute by clicking.** Each playing orbit shows as a `d1 d2 d3` chip in the
-  top bar: click to mute/unmute, shift-click to solo. Mutes survive the model
-  revising the pattern; `esc` clears them.
+- **Lanes.** A row per orbit shows what it plays across the current phrase
+  (4 cycles), wiping like a tracker: hits shaded by level, synth notes as
+  letters, the previous pass dimmed ahead of the playhead, and the sounds
+  each layer played listed after it. Flow's drops, rolls and thinning are
+  visible as they happen. `ctrl+l` hides it.
+- **Mute by clicking.** Each lane's `d1 d2 d3` chip (in the top bar when the
+  lanes are hidden) lights up on every hit: click to mute/unmute, shift-click
+  to solo. Mutes survive the model revising the pattern; `esc` clears them.
 - **Flow mode.** `ctrl+f` lets the music play itself, from slow drift to
   drops, fills and rhythm mutations on the beat, as active as you set it with
   `/flow 1`–`5`. Off until you turn it on. See [Flow](#flow).
@@ -61,6 +66,7 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 | `ctrl+f` | Flow on / off (`/flow 1`–`/flow 5` sets how active) |
 | `ctrl+s` | save the editor to a `.tidal` file (asks for a name the first time) |
 | `ctrl+o` | open a `.tidal` file into the editor (doesn't play it until `ctrl+e`) |
+| `ctrl+l` | lanes on / off |
 | `ctrl+b` | boot SuperDirt |
 | `ctrl+q` | quit (hushes, stops anything selene started) |
 | `↑` / `↓` | prompt history |

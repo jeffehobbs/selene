@@ -208,4 +208,5 @@ class Ollama:
                     yield chunk
 
     async def close(self) -> None:
-        await self.client.aclose()
+        if not self.client.is_closed:
+            await self.client.aclose()

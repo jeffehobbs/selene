@@ -19,6 +19,7 @@ from .files import DEFAULT_DIR, ConfirmScreen, PathScreen, resolve
 from .flow import (DEFAULT_DEPTH, DEPTHS, CtrlSender, FlowDirector, TidalClock, ctrl_name,
                    free_udp_port)
 from .ghci import BUNDLED_BOOT, Ghci
+from .lanes import LaneModel, Lanes
 from .llm import (Ollama, build_system_prompt, evolve_message, fix_message,
                   unknown_sounds_message, user_message)
 from .superdirt import SuperDirt, dirt_status
@@ -77,6 +78,7 @@ class Selene(App):
     OrbitChip:hover { background: $success 35%; }
     OrbitChip.muted { color: $text-muted; background: $error 15%; text-style: strike; }
     OrbitChip.muted:hover { background: $error 30%; }
+    OrbitChip.hit { background: $success 60%; color: $text; }
     #main { height: 1fr; }
     #code { width: 1fr; border: round $primary 50%; }
     #code, #log { border-title-color: $text-muted; }
@@ -95,6 +97,7 @@ class Selene(App):
         Binding("ctrl+f", "flow", "Flow", priority=True),
         Binding("ctrl+s", "save", "Save", priority=True),
         Binding("ctrl+o", "open", "Open", priority=True),
+        Binding("ctrl+l", "lanes", "Lanes", priority=True),
         Binding("ctrl+b", "boot_dirt", "SuperDirt", priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
@@ -129,6 +132,8 @@ class Selene(App):
         self.flow_dtime_cps: float | None = None
         # Tidal's cycle position, from the events it copies to our tap port.
         self.clock = TidalClock()
+        self.lane_model = LaneModel(synths=set(catalog.synth_names()))
+        self.lanes_on = True
         self.tap_port = free_udp_port()
         # The .tidal file the editor was last saved to / opened from.
         self.current_file: Path | None = None
@@ -141,6 +146,7 @@ class Selene(App):
         with Horizontal(id="bar"):
             yield Static(id="status")
             yield Horizontal(id="orbits")
+        yield Lanes(self.lane_model, self.clock, OrbitChip, id="lanes")
         with Horizontal(id="main"):
             yield RichLog(id="log", wrap=True, markup=True, max_lines=2000)
             yield TextArea("", id="code", show_line_numbers=True, tab_behavior="indent",
@@ -176,9 +182,13 @@ class Selene(App):
         if s["flow"]:
             bar.append(f"   ☯{self.flow_depth} {s['flow']}", style="magenta")
         orbits = blocks.sounding_orbits(self.playing_code)
-        if orbits:
+        lanes = self.lanes_on and bool(orbits)
+        if orbits and not lanes:
             bar.append("   ▶", style="green")
         self.query_one("#status", Static).update(bar)
+        # With the lanes showing, the chips head their rows instead of the bar.
+        self.query_one("#lanes", Lanes).display = lanes
+        self.query_one("#orbits").display = not lanes
         self._sync_orbits(orbits)
 
     def _sync_orbits(self, orbits: list[str]) -> None:
@@ -188,6 +198,7 @@ class Selene(App):
             box.remove_children()
             chips = [OrbitChip(o) for o in orbits]
             box.mount(*chips)
+        chips += self.query_one("#lanes", Lanes).set_orbits(orbits)
         for chip in chips:
             chip.set_muted(chip.orbit in self.muted)
         # An orbit that left the code keeps its Tidal mute flag; clear it so
@@ -356,6 +367,10 @@ class Selene(App):
         self.log_line("── new context: next prompt starts from scratch ──", "magenta")
         self.fresh = True
 
+    def action_lanes(self) -> None:
+        self.lanes_on = not self.lanes_on
+        self._render_bar()
+
     def _modal(self) -> bool:
         return len(self.screen_stack) > 1
 
@@ -512,11 +527,12 @@ class Selene(App):
         self.flow.set_muted(self.muted, now)
 
     async def _listen_tap(self) -> None:
-        clock = self.clock
+        clock, lanes = self.clock, self.lane_model
 
         class Tap(asyncio.DatagramProtocol):
             def datagram_received(self, data, addr):
-                clock.feed(data, time.time())
+                for timetag, event in clock.feed(data, time.time()):
+                    lanes.add(timetag, event)
 
         try:
             await asyncio.get_running_loop().create_datagram_endpoint(
@@ -801,12 +817,20 @@ class Selene(App):
 
     async def action_quit(self) -> None:
         self.log_line("shutting down…", "dim")
+        await self._shut_down()
+        self.exit()
+
+    async def _shut_down(self) -> None:
         if self.flow:
             self._flow_stop(log=False)
         await self.ghci.stop()
         await self.dirt.stop()
         await self.ollama.close()
-        self.exit()
+
+    async def on_unmount(self) -> None:
+        # However the app ends (ctrl+q, ctrl+c, a crash, a test), never leave
+        # Tidal playing on its own. Each step is a no-op if already done.
+        await self._shut_down()
 
 
 def merge_layers(playing: str, raw: str) -> str:

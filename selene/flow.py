@@ -632,19 +632,21 @@ class TidalClock:
     def send_time(self, cycle: float) -> float:
         return self.play_time(cycle) - self.ahead - FRAME_SECONDS - SEND_MARGIN
 
-    def feed(self, packet: bytes, received: float) -> None:
-        """Parse a tapped OSC bundle (Tidal sends one per event)."""
+    def feed(self, packet: bytes, received: float) -> list[tuple[float, dict]]:
+        """Parse a tapped OSC bundle (Tidal sends one per event). Returns the
+        events as (play time, params) for anything else that wants them."""
         if not packet.startswith(b"#bundle") or len(packet) < 16:
-            return
+            return []
         sec, frac = struct.unpack(">II", packet[8:16])
         timetag = sec - NTP_EPOCH + frac / 2 ** 32
-        cycle = cps = None
+        events = []
         for addr, args in osc_messages(packet):
             if addr == "/dirt/play":
                 kv = dict(zip(args[0::2], args[1::2]))
-                cycle, cps = kv.get("cycle"), kv.get("cps")
-        if cycle is not None and cps:
-            self.observe(received, timetag, float(cycle), float(cps))
+                events.append((timetag, kv))
+                if kv.get("cycle") is not None and kv.get("cps"):
+                    self.observe(received, timetag, float(kv["cycle"]), float(kv["cps"]))
+        return events
 
 
 def osc_messages(packet: bytes) -> list[tuple[str, list]]:

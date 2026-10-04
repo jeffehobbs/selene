@@ -23,8 +23,13 @@ async def heard(fake_dirt) -> set[str]:
     return {s for m in fake_dirt.plays() for s in m if s in ("bd", "cp", "arpy")}
 
 
+def visible_chips(app) -> list[OrbitChip]:
+    """The chips heading the lanes (the bar's copies are hidden meanwhile)."""
+    return app.query_one("#lanes").chips
+
+
 def chip(app, orbit: str) -> OrbitChip:
-    return next(c for c in app.query(OrbitChip) if c.orbit == orbit)
+    return next(c for c in visible_chips(app) if c.orbit == orbit)
 
 
 @needs_ghci
@@ -34,7 +39,7 @@ async def test_click_mute_solo_and_hush(fake_dirt):
         assert await wait_for(lambda: app.state["ghci"] == "ready", 60)
         code = 'setcps 1\nd1 $ s "bd*4"\nd2 $ s "cp*4"\nd3 $ s "arpy*4"'
         app.evaluate(code, source="editor")
-        assert await wait_for(lambda: len(list(app.query(OrbitChip))) == 3, 10)
+        assert await wait_for(lambda: len(visible_chips(app)) == 3, 10)
         assert await heard(fake_dirt) == {"bd", "cp", "arpy"}
 
         await pilot.click(chip(app, "d1"))
@@ -65,7 +70,7 @@ async def test_click_mute_solo_and_hush(fake_dirt):
         # Hush clears mutes so the next pattern isn't silently muted.
         await pilot.click(chip(app, "d1"))
         await pilot.press("escape")
-        assert await wait_for(lambda: not list(app.query(OrbitChip)), 5)
+        assert await wait_for(lambda: not visible_chips(app), 5)
         assert app.muted == set()
         app.evaluate('d1 $ s "bd*4"', source="editor")
         assert await heard(fake_dirt) == {"bd"}
