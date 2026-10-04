@@ -176,7 +176,7 @@ class OrbitChip(Static):
     """A clickable dN in the status bar: click mutes/unmutes, shift-click solos."""
 
     def __init__(self, orbit: str):
-        super().__init__(f" {orbit} ")
+        super().__init__(f" {orbit:<3} ")  # "d1 " pads to "d10"'s width, so rows line up
         self.orbit = orbit
 
     def set_muted(self, muted: bool) -> None:

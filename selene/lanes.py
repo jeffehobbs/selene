@@ -155,7 +155,6 @@ class Lanes(Vertical):
     Lanes { height: auto; border: round $primary 50%; border-title-color: $text-muted;
             padding: 0 1; }
     Lanes > Horizontal { height: 1; }
-    Lanes OrbitChip { width: 5; margin: 0 1 0 0; }
     Lanes #ruler { height: 1; color: $text-muted; }
     Lanes .held-divider { height: 1; color: $warning 60%; }
     """

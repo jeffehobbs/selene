@@ -122,3 +122,18 @@ def test_sound_names_fill_the_rest_of_the_row():
     assert row.endswith("cp 808bd:3 ")
     assert "superpiano" in m.row("d2", 4 * 16 + 5 + 20, cycle=0.9).plain
     assert m.row("d1", 4 * 16 + 5, cycle=0.9).plain.endswith("│")  # no room, no names
+
+
+@needs_ghci
+async def test_rows_line_up_past_d9(fake_dirt):
+    app = Selene(parse_args(["--boot", str(TEST_BOOT)]))
+    async with app.run_test(size=(120, 34)) as pilot:
+        assert await wait_for(lambda: app.state["ghci"] == "ready", 60)
+        app.evaluate('d1 $ s "bd"\nd9 $ s "hh"\nd10 $ s "cp"\nd12 $ s "arpy"', source="editor")
+        lanes = app.query_one("#lanes")
+        assert await wait_for(lambda: len(list(lanes.query(LaneStrip))) == 4, 5)
+        await pilot.pause()
+        assert len({s.region.x for s in lanes.query(LaneStrip)}) == 1, "lanes start in different columns"
+        assert len({c.outer_size.width for c in lanes.chips}) == 1
+        assert [str(c.render()).rstrip() for c in lanes.chips] == [" d1", " d9", " d10", " d12"]
+        await app.action_quit()
