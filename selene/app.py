@@ -31,6 +31,7 @@ from .superdirt import SuperDirt, dirt_status
 
 SESSIONS = Path.home() / ".local/share/selene"
 HISTORY_TURNS = 4  # prompt/reply pairs of context sent back to the model
+DRIFT_EVERY = 10.0  # seconds between Flow's drift summaries in the log
 # Test hook: run Flow's clock faster than real time.
 FLOW_SPEED = float(os.environ.get("SELENE_FLOW_SPEED", "1"))
 
@@ -265,6 +266,8 @@ class Selene(App):
         self.flow_depth = args.flow_depth
         self.flow_pending: list[asyncio.TimerHandle] = []  # stepped sends in flight
         self.flow_dtime_cps: float | None = None
+        self.flow_drift: dict[str, dict[str, str]] = {}  # orbit -> control -> word
+        self.flow_drift_at = 0.0
         # Tidal's cycle position, from the events it copies to our tap port.
         self.clock = TidalClock()
         self.lane_model = LaneModel(synths=set(catalog.synth_names()))
@@ -1045,6 +1048,7 @@ class Selene(App):
             handle.cancel()
         self.flow_pending.clear()
         self.flow_dtime_cps = None
+        self.flow_drift.clear()
         for name, value in self.flow.neutral_updates():
             self.flow_ctrl.send(name, value)
         self.flow_timer.stop()
@@ -1065,7 +1069,15 @@ class Selene(App):
         self._schedule(steps)
         for e in events:
             if e.kind == "log":
-                self.log_line(f"flow · {e.detail}", "magenta dim")
+                self.log_line(f"☯ {e.detail}", "magenta")
+            elif e.kind == "drift":
+                # Noticeable drift, batched: one line every DRIFT_EVERY seconds,
+                # the latest move per control, at most three per layer.
+                moves = self.flow_drift.setdefault(e.orbit, {})
+                moves.pop(e.gesture, None)
+                moves[e.gesture] = e.detail
+                while len(moves) > 3:
+                    moves.pop(next(iter(moves)))
             elif e.kind == "silence":
                 self._flow_silence(e.orbit)
             elif e.kind == "evolve":
@@ -1074,6 +1086,14 @@ class Selene(App):
                     self.flow.evolved(e.orbit, e.detail, ok=False, now=self._flow_now())
                 else:
                     self._flow_evolve(e.orbit, e.detail)
+        now = time.monotonic()
+        if self.flow_drift and now - self.flow_drift_at >= DRIFT_EVERY:
+            parts = [f"{orbit} {', '.join(words.values())}"
+                     for orbit, words in sorted(self.flow_drift.items(),
+                                                key=lambda kv: int(kv[0][1:]))]
+            self.log_line("☯ drift · " + " · ".join(parts), "magenta dim")
+            self.flow_drift.clear()
+            self.flow_drift_at = now
         if self.flow.exited:
             self._flow_stop()
 
@@ -1082,7 +1102,7 @@ class Selene(App):
         result = await self.ghci.eval(f"{orbit} silence")
         if result.ok:
             self._adopt(f"{orbit} silence", f"(flow) {orbit} retired")
-            self.log_line(f"flow · {orbit} retired", "magenta dim")
+            self.log_line(f"☯ {orbit} stopped (faded out)", "magenta dim")
 
     def _adopt(self, stmt: str, label: str) -> None:
         """Merge a Flow change into what's playing (and the editor, if untouched)."""
@@ -1112,7 +1132,7 @@ class Selene(App):
             try:
                 reply = "".join([c async for c in self.ollama.chat(messages)])
             except Exception as e:  # noqa: BLE001
-                self.log_line(f"flow · ollama: {e}", "red")
+                self.log_line(f"☯ couldn't reach the model to rewrite {orbit}: {e}", "red")
                 break
             messages.append({"role": "assistant", "content": reply})
             stmt = blocks.statement_for(blocks.extract_code(reply), orbit)
@@ -1144,10 +1164,15 @@ class Selene(App):
             messages.append({"role": "user", "content": fix_message(result.error_text, stmt)})
         if self.flow:
             if ok:
+                before = self._playing_statements().get(orbit)
                 self._adopt(stmt, f"(flow) {verb} {orbit}")
-                how = ("swelling in" if kind == "add"
-                       else f"crossfading over {depth.xfade} cycles")
-                self.log_line(f"flow · {verb} {orbit}, {how}", "magenta")
+                if kind == "add":
+                    body = stmt.split("$", 1)[-1].strip().replace("\n", " ")
+                    what = f"adds {orbit}, swelling in: {body[:60]}{'…' * (len(body) > 60)}"
+                else:
+                    change = blocks.describe_change(before or "", stmt)
+                    what = f"rewrites {orbit} ({depth.xfade}-cycle crossfade): {change}"
+                self.log_line(f"☯ {what}", "magenta")
             self.flow.evolved(orbit, kind, ok, self._flow_now())
             self._set(flow="flow" if self.flow_on else "easing out")
 

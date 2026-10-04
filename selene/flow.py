@@ -143,9 +143,23 @@ class Step:
 
 @dataclass
 class Event:
-    kind: str  # "evolve" (detail vary/add), "silence" (a retired orbit), "log"
+    kind: str  # "evolve" (detail vary/add), "silence" (a retired orbit), "log", "drift"
     orbit: str = ""
-    detail: str = ""
+    detail: str = ""  # for "log"/"drift": what's happening, in words, for the player
+    gesture: str = ""  # which gesture, for code: transfer, drop, mutate, ...
+
+
+def hits(density: float) -> str:
+    return f"~{round(density * 100)}% of its hits"
+
+
+# Drift directions in words: control -> (going up, going down). Tone is djf:
+# above 0.5 high-passes (thinner, brighter), below low-passes (darker).
+DRIFT_WORDS = {
+    "gain": ("louder", "quieter"), "tone": ("brighter", "darker"),
+    "space": ("wetter", "drier"), "drive": ("grittier", "cleaner"),
+    "crush": ("smoother", "crunchier"), "send": ("more echo", "less echo"),
+}
 
 
 @dataclass
@@ -179,6 +193,8 @@ class FlowDirector:
         self.evolve_due = self._evolve_gap()
         self.evolve_pending = False
         self.last_evolved: dict[str, float] = {}
+        self.drift_events: list[Event] = []
+        self.mutation_events: list[Event] = []
 
     @property
     def depth(self) -> Depth:
@@ -274,11 +290,15 @@ class FlowDirector:
         events: list[Event] = []
         steps: list[Step] = []
         if self.exiting_until is None:
+            self.drift_events = []
             self._drift(now)
+            events += self.drift_events
             events += self._budget(now)
             if cycle is not None:
                 if self.depth.rhythm:
+                    self.mutation_events = []
                     steps += self._mutate(now, cycle)
+                    events += self.mutation_events
                 if self.depth.events:
                     s, e = self._event(now, cycle)
                     steps += s
@@ -323,6 +343,8 @@ class FlowDirector:
 
     # ── continuous gestures ───────────────────────────────────────────────
 
+    drift_events: list  # filled by _drift, handed out by tick
+
     def _drift(self, now: float) -> None:
         """Each orbit's level/tone/space (and color, at depth 3+) breathe on
         their own prime clocks."""
@@ -340,8 +362,14 @@ class FlowDirector:
                 else:
                     target = self.rng.uniform(lo, hi)
                 duration = self.rng.uniform(*self.depth.ramp)
+                start = o.values[c]
                 self._ramp(orbit, c, target, now, duration)
                 o.due[c] = now + duration + self._jitter(self.rng.choice(PRIMES) * self.depth.gap)
+                moved = o.ramps[c].end - start
+                if abs(moved) >= 0.25 * (hi - lo):  # only moves you'd notice
+                    up, down = DRIFT_WORDS[c]
+                    self.drift_events.append(Event("drift", orbit, up if moved > 0 else down,
+                                                   gesture=c))
 
     def _density(self, orbit: str) -> float:
         o = self.orbits[orbit]
@@ -378,7 +406,7 @@ class FlowDirector:
             if targets:
                 say = targets.pop("_say")
                 self._set_densities(targets, now)
-                return [Event("log", detail=say)]
+                return [Event("log", detail=say, gesture=gesture)]
         return []
 
     def _g_transfer(self, dens: dict[str, float]) -> dict:
@@ -392,13 +420,15 @@ class FlowDirector:
         taker = self.rng.choice(takers)
         amount = min(dens[donor] - MIN_DENSITY, 1 - dens[taker], self.rng.uniform(0.1, 0.35))
         return {donor: dens[donor] - amount, taker: dens[taker] + amount,
-                "_say": f"{donor} → {taker}"}
+                "_say": f"{donor} thins to {hits(dens[donor] - amount)}, "
+                        f"{taker} fills in to {hits(dens[taker] + amount)}"}
 
     def _g_dropout(self, dens: dict[str, float]) -> dict:
         orbit = self.rng.choice(list(dens))
         surplus = dens[orbit] - MIN_DENSITY
         targets = self._spread(dens, {orbit: MIN_DENSITY}, surplus)
-        return {**targets, "_say": f"{orbit} thinning out"} if targets else {}
+        return ({**targets, "_say": f"{orbit} thins right down to {hits(MIN_DENSITY)}; "
+                                    "the others fill in"} if targets else {})
 
     def _g_spotlight(self, dens: dict[str, float]) -> dict:
         orbit = self.rng.choice(list(dens))
@@ -406,7 +436,8 @@ class FlowDirector:
         if need < 0.05:
             return {}
         targets = self._spread(dens, {orbit: 1.0}, -need)
-        return {**targets, "_say": f"spotlight on {orbit}"} if targets else {}
+        return ({**targets, "_say": f"spotlight on {orbit}: every hit, the others thinner"}
+                if targets else {})
 
     def _g_tilt(self, dens: dict[str, float]) -> dict:
         lows = [o for o in dens if self.orbits[o].register < 0]
@@ -423,7 +454,9 @@ class FlowDirector:
         targets |= {o: dens[o] + give / len(up) for o in up}
         if any(not MIN_DENSITY - 1e-9 <= d <= 1 + 1e-9 for d in targets.values()):
             return {}
-        return {**targets, "_say": f"tilting {word}"}
+        busier, sparser = (up, down)
+        return {**targets, "_say": f"tilt: {' '.join(sorted(busier))} busier, "
+                                   f"{' '.join(sorted(sparser))} sparser"}
 
     def _spread(self, dens: dict, fixed: dict, amount: float) -> dict:
         """Give `amount` (negative = take) to the orbits not in `fixed`, keeping
@@ -478,13 +511,21 @@ class FlowDirector:
             o.rest_until_cycle = back + rest
             kind = self.rng.choice(("rot", "ply", "rate", "rev"))
             if kind == "rot":
-                steps += self._step(orbit, "rot", self.rng.choice((1, 2, 3)), at, back)
+                k = self.rng.choice((1, 2, 3))
+                steps += self._step(orbit, "rot", k, at, back)
+                what = f"shifts its pattern {k} step{'s' * (k > 1)} along"
             elif kind == "ply":
                 steps += self._step(orbit, "ply", 2.0, at, back)
+                what = "stutters (every hit ×2)"
             elif kind == "rate":
-                steps += self._step(orbit, "rate", self.rng.choice((0.5, 2.0)), at, back)
+                rate = self.rng.choice((0.5, 2.0))
+                steps += self._step(orbit, "rate", rate, at, back)
+                what = "goes half-time" if rate < 1 else "goes double-time"
             else:
                 steps += self._step(orbit, "rev", 1.0, at, back)
+                what = "plays backwards"
+            self.mutation_events.append(
+                Event("log", orbit, f"{orbit} {what}, cycles {at}–{back}", gesture=kind))
         return steps
 
     def _event(self, now: float, cycle: float) -> tuple[list[Step], list[Event]]:
@@ -502,7 +543,7 @@ class FlowDirector:
                 # Room to breathe before the next one: more of it at depth 4.
                 rest = self.rng.choice((2, 3, 4) if self.depth_level == 4 else (1, 1, 2))
                 self.events_busy_cycle = max(s.cycle for s in steps) + PHRASE * rest
-                return steps, [Event("log", detail=say)]
+                return steps, [Event("log", detail=say, gesture=kind)]
             self.event_due[kind] = now + self._jitter(5)  # nothing free: try again soon
         return [], []
 
@@ -516,7 +557,7 @@ class FlowDirector:
         for orbit in free:
             if orbit != keep:
                 steps += self._step(orbit, "gate", 0.0, at, back)
-        return steps, f"drop to {keep}"
+        return steps, f"drop: only {keep} for cycles {at}–{back}, then everything back in"
 
     def _e_fill(self, free: list[str], at: int) -> tuple[list[Step], str]:
         """One layer at double time for the last cycle of the phrase."""
@@ -524,7 +565,8 @@ class FlowDirector:
         if not idle:
             return [], ""
         orbit = self.rng.choice(idle)
-        return self._step(orbit, "rate", 2.0, at - 1, at), f"fill on {orbit}"
+        return (self._step(orbit, "rate", 2.0, at - 1, at),
+                f"fill: {orbit} double-time in cycle {at - 1}, into the next phrase")
 
     def _e_roll(self, free: list[str], at: int) -> tuple[list[Step], str]:
         """One layer stutters (ply 3) into the boundary."""
@@ -532,12 +574,14 @@ class FlowDirector:
         if not idle:
             return [], ""
         orbit = self.rng.choice(idle)
-        return self._step(orbit, "ply", 3.0, at - 1, at), f"roll on {orbit}"
+        return (self._step(orbit, "ply", 3.0, at - 1, at),
+                f"roll: {orbit} stutters ×3 into cycle {at}")
 
     def _e_throw(self, free: list[str], at: int) -> tuple[list[Step], str]:
         """A dub delay throw on one layer for a cycle; the tail rings on."""
         orbit = self.rng.choice(free)
-        return self._step(orbit, "throw", 0.6, at, at + 1), f"throw on {orbit}"
+        return (self._step(orbit, "throw", 0.6, at, at + 1),
+                f"throw: a dub echo on {orbit} at cycle {at}")
 
     def _steps_home(self, cycle: float | None) -> list[Step]:
         """Every stepped control back to neutral on the next boundary."""
@@ -566,7 +610,9 @@ class FlowDirector:
             orbit = self.rng.choice(free)
             self.orbits[orbit].retiring = True
             self._ramp(orbit, "gain", 0.0, now, max(self.depth.ramp[1], 12))
-            return [Event("log", orbit, f"{orbit} fading out")]
+            return [Event("log", orbit, f"{orbit} fades out over "
+                                        f"{round(max(self.depth.ramp[1], 12))}s, then stops",
+                          gesture="retire")]
         if n <= 3 and roll < 0.25:
             used = {int(o[1:]) for o in self.orbits}
             k = next(i for i in range(1, 13) if i not in used)

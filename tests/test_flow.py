@@ -207,7 +207,7 @@ def test_deep_flow_steps_land_on_boundaries_and_come_home(seed):
     assert all(s.cycle % PHRASE in (0, PHRASE - 1) for s in starts)
     # Every deviation is scheduled to come home.
     assert all(v == STEPPED[n[3:-1]] for n, v in final_values(steps).items())
-    kinds = {e.detail.split()[0] for _, e in events if e.kind == "log"}
+    kinds = {e.gesture for _, e in events if e.kind == "log"}
     assert {"drop", "fill", "roll", "throw"} <= kinds, kinds
 
 
@@ -222,7 +222,7 @@ def test_gentle_depths_have_no_color_rhythm_or_events():
             for o in CODE:
                 for c in ("drive", "crush", "send"):
                     assert s[(o, c)] == CONTINUOUS[c][0]
-        assert not [e for _, e in events if e.kind == "log" and e.detail.split()[0] in
+        assert not [e for _, e in events if e.kind == "log" and e.gesture in
                     ("drop", "fill", "roll", "throw")]
 
 
@@ -266,7 +266,7 @@ def test_drum_layers_are_never_thinned(depth):
     # by test_density_budget_is_zero_sum; here a retirement re-settles it).
     assert any(s[("d1", "thin")] > 0 for s in snaps)
     budget = [e.detail for _, e in events if e.kind == "log" and
-              ("→" in e.detail or "thinning" in e.detail or "spotlight" in e.detail)]
+              e.gesture in ("transfer", "dropout", "spotlight", "tilt")]
     assert budget and not [g for g in budget if "d4" in g or "d5" in g]
 
 
@@ -280,3 +280,27 @@ def test_a_layer_that_becomes_drums_glides_back_to_every_hit():
     snaps, _ = run(d, 30, start=400, on_event=ack_evolves(d))
     thins = [s[(thinned, "thin")] for s in snaps]
     assert thins[-1] == 0 and all(b <= a + 1e-9 for a, b in zip(thins, thins[1:]))
+
+
+def test_flow_explains_itself():
+    """Every gesture comes with words the player can read, with timing for
+    anything stepped, and noticeable drift is reported."""
+    d = FlowDirector(seed=12, depth=5)
+    d.rebase({**CODE, **DRUMS}, now=0, player=False)
+    _, events = run(d, 1800, on_event=ack_evolves(d))
+    logs = [e for _, e in events if e.kind == "log"]
+    by = {}
+    for e in logs:
+        by.setdefault(e.gesture, []).append(e.detail)
+    assert {"transfer", "drop", "fill", "roll", "throw"} <= set(by)
+    assert {"rot", "ply", "rate", "rev"} & set(by), "rhythm mutations aren't logged"
+    assert all("% of its hits" in t for t in by["transfer"])
+    for g in ("drop", "rot", "ply", "rate", "rev"):
+        for text in by.get(g, []):
+            assert "cycles " in text and "–" in text, text  # when it happens
+    for text in by["fill"] + by["roll"] + by["throw"]:
+        assert "cycle " in text, text
+    drift = [e for _, e in events if e.kind == "drift"]
+    assert drift and {e.detail for e in drift} <= {
+        "louder", "quieter", "brighter", "darker", "wetter", "drier", "grittier",
+        "cleaner", "crunchier", "smoother", "more echo", "less echo"}

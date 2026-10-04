@@ -128,3 +128,15 @@ def test_code_stream_holds_back_partial_lines():
     assert s.feed("```haskell\nd1 $ s \"80") == []
     assert s.feed("8bd*4\"\nd2") == ['d1 $ s "808bd*4"']
     assert s.finish() == ["d2"]
+
+
+def test_describe_change():
+    from selene.blocks import describe_change
+    old = 'd2 $ n (scale "dorian" "0 2 <4 3> 7") # s "superpiano" # legato 1.2'
+    assert describe_change(old, old.replace("<4 3>", "<4 5>")) == '"0 2 <4 3> 7" → "0 2 <4 5> 7"'
+    assert describe_change(old, old + " # room 0.3") == "+ # room 0.3"
+    assert describe_change(old, old.replace("d2 $ ", "d2 $ every 4 (fast 2) $ ")) == \
+        "+ every 4 (fast 2) $"
+    assert describe_change(old, old.replace("superpiano", "supervibe")) == \
+        '"superpiano" → "supervibe"'
+    assert describe_change(old, old) == "no change to the code"

@@ -94,7 +94,7 @@ async def test_flow_evolves_a_layer_with_the_model(fake_dirt, monkeypatch):
         before = app.playing_code
         assert await wait_for(lambda: app.playing_code != before, 300), log_text(app)
         print("\n--- flow evolved ---\n" + app.playing_code)
-        assert "flow · " in log_text(app)
+        assert "☯ rewrites " in log_text(app) or "☯ adds " in log_text(app)
         assert blocks.scales(app.playing_code) <= {"dorian"}
         assert "setcps (110/60/4)" in app.playing_code
         assert app.query_one("#code").text == app.playing_code  # editor followed along

@@ -193,3 +193,30 @@ class CodeStream:
             return []
         self.started = True
         return [line]
+
+
+def describe_change(old: str, new: str, limit: int = 3) -> str:
+    """What changed between two versions of a statement, compactly:
+    `"0 2 <4 3> 7" → "0 2 <4 5> 7"; + # room 0.3`. Mini-notation strings are
+    compared whole, so a changed pattern reads as before → after."""
+    import difflib
+
+    def tokens(stmt: str) -> list[str]:
+        return re.findall(r'"[^"]*"|[^\s"]+', re.sub(r"^d\d{1,2}\s*\$\s*", "", stmt.strip()))
+
+    def clip(words: list[str], width: int = 40) -> str:
+        text = " ".join(words)
+        return text if len(text) <= width else text[:width - 1] + "…"
+
+    a, b = tokens(old), tokens(new)
+    hunks = []
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes():
+        if op == "replace":
+            hunks.append(f"{clip(a[i1:i2])} → {clip(b[j1:j2])}")
+        elif op == "delete":
+            hunks.append(f"− {clip(a[i1:i2])}")
+        elif op == "insert":
+            hunks.append(f"+ {clip(b[j1:j2])}")
+    if not hunks:
+        return "no change to the code"
+    return "; ".join(hunks[:limit]) + ("; …" if len(hunks) > limit else "")
