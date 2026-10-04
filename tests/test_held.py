@@ -96,3 +96,54 @@ async def test_held_layers(tmp_path, fake_dirt):
         await asyncio.sleep(2.5)
         assert not app._all_orbits(), "hushed layers came back"
         await app.action_quit()
+
+
+def log_text(app):
+    return "\n".join(strip.text for strip in app.query_one("#log").lines)
+
+
+@needs_ghci
+async def test_fade_all(tmp_path, fake_dirt):
+    from test_flow_app import make_app
+    (tmp_path / "a.tidal").write_text(A)
+    (tmp_path / "b.tidal").write_text(B)
+    app = make_app("--dir", str(tmp_path))
+    async with app.run_test(size=(120, 40)) as pilot:
+        assert await wait_for(lambda: app.state["ghci"] == "ready", 60)
+        app.command("open a")
+        await pilot.press("ctrl+e")
+        await asyncio.sleep(0.5)
+        app.command("open b")
+        await pilot.press("ctrl+e")
+        assert await wait_for(lambda: set(app.held) == {"d3", "d4"}, 10)
+        await pilot.press("ctrl+f")
+        assert app.flow_on
+
+        # Everything, current and held, fades over 4 cycles (2 s at cps 2).
+        app.command("fade all 4")
+        await asyncio.sleep(0.3)
+        assert not app.flow_on  # Flow steps aside for the fade
+        assert set(app.fading) == {"d1", "d2", "d3", "d4"}
+        assert await heard(fake_dirt), "should still be audible mid-fade"
+        assert await wait_for(lambda: not app._all_orbits(), 4)
+        assert await heard(fake_dirt) == set()
+        assert "faded out" in log_text(app)
+        assert app.query_one("#code").text == B  # the code is still there...
+        await pilot.press("ctrl+e")  # ...to bring it back
+        assert await wait_for(lambda: app.playing_code == B, 5)
+        assert await heard(fake_dirt) == {"bd", "hh"}
+
+        # Playing something mid-fade cancels the hush at the end.
+        app.command("fade all 4")
+        await asyncio.sleep(0.5)
+        await pilot.press("ctrl+e")
+        await asyncio.sleep(2.5)  # past where the fade would have ended
+        assert app.playing_code == B
+        assert await heard(fake_dirt) == {"bd", "hh"}
+
+        # Cycle counts on single fades.
+        app.command("fade 1 16")
+        assert await wait_for(lambda: "fading d1 out over 16 cycles" in log_text(app), 3)
+        app.command("fade d1 d2 3")
+        assert await wait_for(lambda: "fading d1 d2 out over 3 cycles" in log_text(app), 3)
+        await app.action_quit()

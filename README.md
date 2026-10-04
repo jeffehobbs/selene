@@ -75,8 +75,8 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 | shift-click `dN` | solo that orbit (again to un-solo) |
 
 In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/cps 0.6`,
-`/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/fade 4`, `/stop 4`,
-`/take 4`, `/flow`, `/split 30` (the log's share of the width; `/split`
+`/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/fade 4 [CYCLES]`,
+`/fade all`, `/stop 4`, `/take 4`, `/flow`, `/split 30` (the log's share of the width; `/split`
 resets), `/save [NAME]`, `/open [NAME]`, `/model NAME`, `/new` are commands.
 The split and whether the lanes are showing are remembered between launches
 (`~/.local/share/selene/settings.json`).
@@ -86,8 +86,14 @@ doesn't mention: open a file with `d1`–`d3` over one with `d1`–`d6` and
 `d4`–`d6` keep going, DJ-style. They stay in the lanes below a *held* divider
 (amber chips; hover for where they came from), mute and solo like any layer,
 and the model knows they're there. `/fade 4` crossfades one out over 8
-cycles, `/stop 4` cuts it on the next cycle, `/fade held` / `/stop held` do
-all of them, and `/take 4` pulls its code back into the editor to work on.
+cycles (`/fade 4 16` over 16; `/fade d4 d5` for several), `/stop 4` cuts it
+on the next cycle, `/fade held` / `/stop held` do all the held ones, and
+`/take 4` pulls its code back into the editor to work on.
+
+`/fade all` fades *everything* out, current and held, over 8 cycles (or
+`/fade all 16`), turning Flow off and ending like `esc`: silent, with your
+code still in the editor for `ctrl+e`. Playing anything mid-fade cancels the
+silence at the end; `esc` still cuts straight to it.
 Anything selene hears playing that it didn't start gets a held lane too.
 
 Files live in `~/Documents/selene` unless you pass `--dir`; a bare name means

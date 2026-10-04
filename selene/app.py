@@ -14,6 +14,7 @@ from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
+from textual.css.query import NoMatches
 from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import Footer, Input, RichLog, Static, TextArea
@@ -240,6 +241,8 @@ class Selene(App):
         self.held: dict[str, Held] = {}
         self.current_label = "earlier code"
         self.fading: dict[str, object] = {}  # orbit -> token of its pending fade
+        self.fade_all_token: object | None = None  # a /fade all on its way out
+        self.fade_timers: list = []  # stopped on shutdown so none fires into a dead app
         self.last_known: dict[str, float] = {}  # orbit -> when selene last tracked it
         self._known_prev: set[str] = set()
         self.muted: set[str] = set()
@@ -367,6 +370,7 @@ class Selene(App):
         if any(st.strip() == "hush" for st in stmts):
             self.held.clear()
         mentioned = set(blocks.orbits_used(code))
+        self.fade_all_token = None  # new music: a fade-all mustn't hush it at the end
         for stmt in blocks.split_statements(self.playing_code):
             orbits = blocks.sounding_orbits(stmt)
             if orbits and orbits[0] not in mentioned:
@@ -376,6 +380,14 @@ class Selene(App):
             self.fading.pop(orbit, None)
         self.playing_code = code
         self.current_label = label
+
+    def _claim(self, code: str) -> None:
+        """The player is about to (re)play these layers: any fade on them is
+        overruled now, not when GHCi gets round to it, or a fade timer could
+        silence them in between."""
+        for orbit in blocks.orbits_used(code):
+            self.fading.pop(orbit, None)
+        self.fade_all_token = None
 
     def toggle_orbit(self, orbit: str, solo: bool = False) -> None:
         orbits = self._all_orbits()
@@ -409,7 +421,10 @@ class Selene(App):
         self._render_bar()
 
     def log_line(self, text: str, style: str = "") -> None:
-        log = self.query_one("#log", RichLog)
+        try:
+            log = self.query_one("#log", RichLog)
+        except NoMatches:  # shutting down: GHCi's goodbye has nowhere to go
+            return
         log.write(Text(text, style=style) if style else Text(text))
 
     def _ghci_line(self, line: str) -> None:
@@ -507,7 +522,7 @@ class Selene(App):
             self.action_new_session()
         else:
             self.log_line("commands: /hush /cps N /bpm N /mute N /unmute [N] /solo N "
-                          "/fade N|held /stop N|held /take N /flow [1-5] /split [N] /save [NAME] /open [NAME] "
+                          "/fade N|held|all [CYCLES] /stop N|held|all /take N /flow [1-5] /split [N] /save [NAME] /open [NAME] "
                           "/model NAME /new", "yellow")
 
     def orbit_command(self, name: str, arg: str) -> None:
@@ -530,13 +545,29 @@ class Selene(App):
     def _held_code(self) -> str:
         return "\n".join(h.stmt for h in self.held.values() if h.stmt)
 
+    FADE_CYCLES = 8
+
     def held_command(self, name: str, arg: str) -> None:
-        """/fade N|held, /stop N|held, /take N."""
+        """/fade N|d4 d5|held|all [CYCLES], /stop N|held|all, /take N."""
         orbits = self._all_orbits()
-        if arg == "held" and name != "take":
+        words = arg.split()
+        cycles = self.FADE_CYCLES
+        # "/fade 4 16" is d4 over 16 cycles: with more than one word, a bare
+        # trailing number is the length (name several layers as d4 d5).
+        if name == "fade" and len(words) > 1 and words[-1].isdigit():
+            cycles = max(1, int(words.pop()))
+        if words == ["all"] and name != "take":
+            if not orbits:
+                self.log_line("nothing is playing", "yellow")
+            elif name == "fade":
+                self._fade_all(cycles)
+            else:
+                self.action_hush()
+            return
+        if words == ["held"] and name != "take":
             targets = [o for o in orbits if o in self.held]
         else:
-            targets = [f"d{a.lstrip('d')}" for a in arg.split()]
+            targets = [f"d{w.lstrip('d')}" for w in words]
         if not targets or any(o not in orbits for o in targets):
             held = " ".join(o for o in orbits if o in self.held) or "none"
             self.log_line(f"playing: {' '.join(orbits) or 'none'} · held: {held}", "yellow")
@@ -544,7 +575,26 @@ class Selene(App):
         if name == "take":
             self._take(targets[0])
         else:
-            self._release(targets, fade=name == "fade")
+            self._release(targets, fade=name == "fade", cycles=cycles)
+
+    def _fade_all(self, cycles: int) -> None:
+        """Everything out over `cycles`, ending like a hush. Flow stops so it
+        can't fight the fade; the editor keeps the code for ctrl+e."""
+        if self.flow_on:
+            self.action_flow()  # its controls glide home underneath
+        token = object()
+        self.fade_all_token = token
+        self._release(self._all_orbits(), fade=True, cycles=cycles, quiet=True)
+        seconds = cycles / (self.clock.cps or 0.5625) + 0.3
+        self.fade_timers.append(self.set_timer(seconds, lambda: self._faded_out(token)))
+        self.log_line(f"fading everything out over {cycles} cycles", "magenta")
+
+    def _faded_out(self, token) -> None:
+        if self.fade_all_token is not token:
+            return  # the player hushed or played something since
+        self.fade_all_token = None
+        self.fading.clear()  # now, not when the hush worker runs: no per-layer
+        self._hush("faded out")  # fade timer may tidy (and rewrite the editor) meanwhile
 
     def _take(self, orbit: str) -> None:
         """A held layer's code back into the editor; it's current again."""
@@ -563,30 +613,47 @@ class Selene(App):
             self.log_line(f"took {orbit} from {held.source}", "cyan")
             self._render_bar()
 
-    @work(group="play", exclusive=False)
-    async def _release(self, orbits: list[str], fade: bool) -> None:
-        cycles = 8
-        for orbit in orbits:
-            n = int(orbit[1:])
-            code = f"xfadeIn {n} {cycles} $ silence" if fade else f"{orbit} silence"
-            result = await self.ghci.eval(code)
-            if not result.ok:
-                continue
-            if fade:
-                token = object()
-                self.fading[orbit] = token
-                seconds = cycles / (self.clock.cps or 0.5625) + 0.3
-                self.set_timer(seconds, lambda o=orbit, t=token: self._gone(o, t))
-                self.log_line(f"fading {orbit} out over {cycles} cycles", "magenta")
-            else:
+    def _release(self, orbits: list[str], fade: bool, cycles: int = 8,
+                 quiet: bool = False) -> None:
+        """Fade or stop layers. The fade markers are set now, before anything
+        else can run, so a re-play that follows clears them correctly."""
+        tokens = {o: object() for o in orbits} if fade else {}
+        self.fading.update(tokens)
+        self._render_bar()
+        self._release_in_ghci(orbits, fade, cycles, quiet, tokens)
+
+    @work(group="release")  # not "play": a new evaluation mustn't cancel it halfway
+    async def _release_in_ghci(self, orbits: list[str], fade: bool, cycles: int,
+                               quiet: bool, tokens: dict) -> None:
+        # One statement, so no evaluation can land between two layers' fades.
+        moves = [f"xfadeIn {int(o[1:])} {cycles} silence" if fade else f"{o} silence"
+                 for o in orbits]
+        result = await self.ghci.eval(f"sequence_ [{', '.join(moves)}]")
+        if not result.ok:
+            for orbit, token in tokens.items():
+                if self.fading.get(orbit) is token:
+                    del self.fading[orbit]
+            self._render_bar()
+            return
+        if fade:
+            seconds = cycles / (self.clock.cps or 0.5625) + 0.3
+            for orbit, token in tokens.items():
+                self.fade_timers.append(
+                    self.set_timer(seconds, lambda o=orbit, t=token: self._gone(o, t)))
+            if not quiet:
+                self.log_line(f"fading {' '.join(orbits)} out over {cycles} cycles", "magenta")
+        else:
+            for orbit in orbits:
                 self._gone(orbit, None)
-                self.log_line(f"stopped {orbit}", "magenta")
+            self.log_line(f"stopped {' '.join(orbits)}", "magenta")
         self._render_bar()
 
     def _gone(self, orbit: str, token) -> None:
         """A layer finished fading or was stopped: it's no longer playing."""
         if token is not None and self.fading.get(orbit) is not token:
             return  # re-taken or replaced since
+        if token is not None and self.fade_all_token is not None:
+            return  # part of a /fade all: its hush cleans up, leaving the editor be
         self.fading.pop(orbit, None)
         if self.held.pop(orbit, None) is None and orbit in blocks.sounding_orbits(self.playing_code):
             clean = not self._editor_dirty()
@@ -681,7 +748,8 @@ class Selene(App):
         self._hush()
 
     @work(group="hush")
-    async def _hush(self) -> None:
+    async def _hush(self, label: str = "hush") -> None:
+        self.fade_all_token = None  # esc mid-fade: this is the end of it
         if self.flow:
             # Everything is about to be silent, so no glide: straight to neutral.
             self._flow_stop(log=False)
@@ -691,7 +759,7 @@ class Selene(App):
         self.fading.clear()
         self.muted.clear()
         self._code_state(None)
-        self.log_line("hush", "magenta")
+        self.log_line(label, "magenta")
         self._render_bar()
 
     @work(group="services", exclusive=False)
@@ -717,6 +785,7 @@ class Selene(App):
         if not code.strip():
             return
         self._code_state("busy")
+        self._claim(code)
         result = await self.ghci.eval(self._wrap(code))
         if result.ok:
             if source == "editor":
@@ -730,8 +799,10 @@ class Selene(App):
                     self.held.clear()
                 else:
                     self.playing_code = merge_layers(self.playing_code, code)
+                    self.fade_all_token = None
                     for orbit in blocks.orbits_used(code):  # it's current now
                         self.held.pop(orbit, None)
+                        self.fading.pop(orbit, None)
                 if clean:  # keep the editor showing what plays, unless mid-edit
                     editor.text = self.playing_code
             self._code_state("playing")
@@ -785,6 +856,7 @@ class Selene(App):
                 messages.append({"role": "user", "content": unknown_sounds_message(unknown)})
                 continue
             self._set(llm="evaluating…")
+            self._claim(code)
             result = await self.ghci.eval(self._wrap(code))
             if result.ok:
                 break
@@ -1143,6 +1215,9 @@ class Selene(App):
         self.exit()
 
     async def _shut_down(self) -> None:
+        for timer in self.fade_timers:
+            timer.stop()
+        self.fade_timers.clear()
         if self.flow:
             self._flow_stop(log=False)
         await self.ghci.stop()
