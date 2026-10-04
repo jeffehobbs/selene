@@ -7,11 +7,13 @@ from selene.flow import (CONTINUOUS, DEPTHS, EXIT_SECONDS, FLOOR_RAMP, MIN_DENSI
 
 TICK = 0.1
 CPS = 0.5  # simulated Tidal: cycle = t * CPS
+# Melodic layers (low, high, mid), so the density budget has something to move.
 CODE = {
-    "d1": 'd1 $ s "808bd*4"',
-    "d2": 'd2 $ s "~ hh*2"',
+    "d1": 'd1 $ n "0 ~ 0 3" # s "jvbass"',
+    "d2": 'd2 $ s "arpy*8"',
     "d3": 'd3 $ n "0 3 7" # s "superpiano"',
 }
+DRUMS = {"d4": 'd4 $ s "808bd*4"', "d5": 'd5 $ s "~ hh*2"'}
 
 
 def run(director, seconds, start=0.0, on_event=None, steps=None):
@@ -249,3 +251,32 @@ def test_lowering_depth_sends_everything_home():
     for o in CODE:
         for c in ("drive", "crush", "send"):
             assert snaps[-1][(o, c)] == CONTINUOUS[c][0]
+
+
+@pytest.mark.parametrize("depth", [1, 3, 5])
+def test_drum_layers_are_never_thinned(depth):
+    from selene.flow import is_drums
+    assert is_drums(DRUMS["d4"]) and is_drums(DRUMS["d5"]) and not is_drums(CODE["d2"])
+    d = FlowDirector(seed=8, depth=depth)
+    d.rebase({**CODE, **DRUMS}, now=0, player=False)
+    snaps, events = run(d, 3600, on_event=ack_evolves(d))
+    for s in snaps:
+        assert s[("d4", "thin")] == 0 and s[("d5", "thin")] == 0
+    # The melodic layers still trade density (conservation itself is covered
+    # by test_density_budget_is_zero_sum; here a retirement re-settles it).
+    assert any(s[("d1", "thin")] > 0 for s in snaps)
+    budget = [e.detail for _, e in events if e.kind == "log" and
+              ("→" in e.detail or "thinning" in e.detail or "spotlight" in e.detail)]
+    assert budget and not [g for g in budget if "d4" in g or "d5" in g]
+
+
+def test_a_layer_that_becomes_drums_glides_back_to_every_hit():
+    d = FlowDirector(seed=3, depth=5)
+    d.rebase(CODE, now=0, player=False)
+    run(d, 400, on_event=ack_evolves(d))
+    thinned = max(CODE, key=lambda o: d.orbits[o].values["thin"])
+    assert d.orbits[thinned].values["thin"] > 0
+    d.rebase({**CODE, thinned: f'{thinned} $ s "bd*4"'}, now=400, player=True)
+    snaps, _ = run(d, 30, start=400, on_event=ack_evolves(d))
+    thins = [s[(thinned, "thin")] for s in snaps]
+    assert thins[-1] == 0 and all(b <= a + 1e-9 for a, b in zip(thins, thins[1:]))

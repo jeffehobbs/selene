@@ -32,6 +32,8 @@ import socket
 import struct
 from dataclasses import dataclass, field
 
+from .blocks import sound_names
+
 # ── controls ──────────────────────────────────────────────────────────────
 
 # Continuous controls: name -> (neutral, (lo, hi) at depth 1, (lo, hi) at depth 5).
@@ -62,6 +64,17 @@ PRIMES = (11, 13, 17, 19, 23, 29, 31, 37, 41, 43)
 BUDGET_PERIODS = {"transfer": 37, "dropout": 53, "tilt": 61, "spotlight": 71}
 EVENT_PERIODS = {"drop": 47, "fill": 29, "roll": 31, "throw": 23}
 MIN_DENSITY = 1 - CONTINUOUS["thin"][1][1]
+
+# Drum kits and drum synths. Flow's density budget never thins these: losing
+# random hits makes a beat sound broken, not varied.
+DRUM_SOUNDS = frozenset("""
+    bd sd sn hh hh27 oh ho hc cp cr cy rs rm cb ht mt lt lighter clak tok
+    kicklinn linnhats clubkick hardkick popkick reverbkick realclaps stomp hand perc
+    drum drumtraks dr dr2 dr55 dr_few gretsch ifdrums sequential jazz house techno
+    tech electro1 hardcore gabba gabbaloud gabbalouder feel east tabla tabla2 tablex
+    amencutup jungle breaks125 breaks152 breaks157 breaks165
+    superkick supersnare superhat superclap super808 soskick sossnare soshats sostoms
+""".split())
 
 LOW_WORDS = ("bd", "kick", "bass", "808lt", "sub", "reese", "clubkick", "hardkick")
 HIGH_WORDS = ("hh", "hat", "oh", "cy", "cr", "ride", "bell", "arpy", "glitch",
@@ -145,6 +158,7 @@ class Orbit:
     busy_until_cycle: float = -1  # a stepped mutation is in flight until then
     rest_until_cycle: float = -1  # and the layer is heard as written until then
     register: int = 0  # -1 low, 0 mid, +1 high
+    drums: bool = False  # exempt from the density budget
     retiring: bool = False
 
 
@@ -182,12 +196,19 @@ class FlowDirector:
                 del self.orbits[orbit]
         for orbit, stmt in code_orbits.items():
             if orbit not in self.orbits:
-                o = Orbit(register=register_of(stmt))
+                o = Orbit(register=register_of(stmt), drums=is_drums(stmt))
                 for c in DRIFTED + COLOR + ("mutate",):
                     o.due[c] = now + self._jitter(self.rng.choice(PRIMES[:5]))
                 self.orbits[orbit] = o
             else:
-                self.orbits[orbit].register = register_of(stmt)
+                o = self.orbits[orbit]
+                o.register = register_of(stmt)
+                if is_drums(stmt) and not o.drums:
+                    # Became a drum layer while thinned: glide back to every hit.
+                    o.drums = True
+                    if o.values["thin"] or "thin" in o.ramps:
+                        self._ramp(orbit, "thin", 0.0, now, self.depth.ramp[0])
+                o.drums = is_drums(stmt)
         if player:
             self.evolve_due = max(self.evolve_due, now + self.depth.yield_seconds)
         return resets
@@ -336,7 +357,7 @@ class FlowDirector:
         self.busy_until = now + duration
 
     def _budget(self, now: float) -> list[Event]:
-        free = [o for o in self.orbits if self._free(o)]
+        free = [o for o in self.orbits if self._free(o) and not self.orbits[o].drums]
         if len(free) < 2 or now < self.busy_until:
             return []
         if self.settled_for != frozenset(free):
@@ -575,6 +596,12 @@ class FlowDirector:
 
     def _evolve_gap(self) -> float:
         return self._jitter(self.rng.choice(self.depth.evolve_minutes) * 60)
+
+
+def is_drums(stmt: str) -> bool:
+    """Does this layer play a drum kit (or drum synth)?"""
+    return any(name in DRUM_SOUNDS or name.startswith(("808", "909"))
+               for name in sound_names(stmt))
 
 
 def register_of(stmt: str) -> int:

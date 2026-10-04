@@ -127,7 +127,11 @@ how active it is (and starts it):
   selene, so Flow knows where the cycle is and sends each change just before
   Tidal plays that cycle.
 - **Density is a zero-sum budget**: it moves between layers (transfers, tilts
-  between low and high parts, spotlights, dropouts); the total holds.
+  between low and high parts, spotlights, dropouts); the total holds. **Drum
+  layers are exempt** (anything playing a drum kit, break or drum synth):
+  losing random hits makes a beat sound broken, so Flow never thins them.
+  They still drift in level, tone and space, and still join whole-phrase
+  drops.
 - **The model evolves one layer** every 1–11 minutes depending on depth,
   crossfaded in with `xfadeIn`; it may add a layer that swells in from
   silence, or fade one out.
