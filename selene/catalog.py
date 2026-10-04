@@ -26,14 +26,24 @@ def sample_banks(root: Path = QUARKS / "Dirt-Samples") -> list[str]:
     return sorted(p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
 
 
+# SynthDefs SuperDirt defines for its own plumbing, not for playing.
+INTERNAL_SYNTH = re.compile(r"^(dirt_.*|debug|in|in1|inr|tutorial\d*)$")
+SYNTHDEF = re.compile(r'SynthDef\(\s*(?:\\(\w+)|"(\w+)")')
+
+
 def synth_names(root: Path = QUARKS) -> list[str]:
-    if not root.is_dir():
-        return FALLBACK_SYNTHS
+    """Every playable SynthDef SuperDirt loads: synths/*.scd, plus the
+    sc3plugins extras it loads from library/ when they're installed."""
+    dirt = root / "SuperDirt"
+    files = sorted((dirt / "synths").glob("*.scd")) + [dirt / "library/default-synths-extra.scd"]
     names: set[str] = set()
-    for scd in root.glob("SuperDirt/**/*.scd"):
+    for scd in files:
         try:
             text = scd.read_text(errors="ignore")
         except OSError:
             continue
-        names.update(re.findall(r"SynthDef\(\\((?:super|sos)\w+)", text))
+        for a, b in SYNTHDEF.findall(text):
+            name = a or b
+            if not INTERNAL_SYNTH.match(name):
+                names.add(name)
     return sorted(names) or FALLBACK_SYNTHS
