@@ -60,3 +60,28 @@ def test_fix_message_adds_hint():
     from selene.llm import fix_message
     msg = fix_message("• Probable cause: ‘every’ is applied to too few arguments")
     assert "Move it in front of the pattern" in msg
+
+
+def test_flowify_wraps_orbits_only():
+    from selene.blocks import flowify
+    code = 'setcps 0.5\nd1 $ s "bd*4" # gain 0.9 -- kick\nd2 silence\nd3 $ silence'
+    out = flowify(code).split("\n")
+    assert out[0] == "setcps 0.5"
+    assert out[1] == 'd1 $ degradeBy (cF 0 "fl_thin1") $ (s "bd*4" # gain 0.9 -- kick'
+    assert out[2].startswith('  ) |* gain (cF 1 "fl_gain1")')
+    assert out[3:] == ["d2 silence", "d3 $ silence"]
+
+
+def test_as_xfade_and_statement_for():
+    from selene.blocks import as_xfade, statement_for
+    assert as_xfade('d3 $ s "cp*2"', 8) == 'xfadeIn 3 8 $ (s "cp*2"\n  ) |< orbit 2'
+    reply = 'setcps 1\nd1 $ s "bd"\nd3 $ n "0 2"\n  # s "superpiano"'
+    assert statement_for(reply, "d3") == 'd3 $ n "0 2"\n  # s "superpiano"'
+    assert statement_for(reply, "d2") is None
+
+
+def test_user_message_marks_unplayed_edits():
+    from selene.llm import user_message
+    msg = user_message("add hats", 'd1 $ s "bd"', 'd1 $ s "bd*2"')
+    assert "not played it yet" in msg and 'd1 $ s "bd*2"' in msg and 'd1 $ s "bd"' in msg
+    assert "edited" not in user_message("add hats", 'd1 $ s "bd"')

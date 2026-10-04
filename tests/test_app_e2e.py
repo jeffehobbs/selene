@@ -74,3 +74,29 @@ async def test_screenshot(tmp_path):
         await pilot.pause()
         app.save_screenshot(filename="screenshot.svg", path=str(tmp_path.parent.parent))
         await app.action_quit()
+
+
+@needs_ghci
+@pytest.mark.skipif(not ollama_has("gemma4"), reason="no gemma4 in Ollama")
+async def test_flow_evolves_a_layer_with_the_model(fake_dirt, monkeypatch):
+    import selene.app as app_module
+    from selene import blocks
+    monkeypatch.setattr(app_module, "FLOW_SPEED", 60.0)  # a minute of Flow per second
+    app = Selene(parse_args(["--boot", str(TEST_BOOT)]))
+    code = ('setcps (110/60/4)\nd1 $ s "808bd:3*4" # gain 1\n'
+            'd2 $ n (scale "dorian" "0 2 <4 3> 7") # s "superpiano" # legato 1.2')
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(lambda: app.state["ghci"] == "ready", 60)
+        app.query_one("#code").text = code
+        await pilot.press("ctrl+e")
+        assert await wait_for(lambda: app.playing_code == code, 10)
+        await pilot.press("ctrl+f")
+        before = app.playing_code
+        assert await wait_for(lambda: app.playing_code != before, 300), log_text(app)
+        print("\n--- flow evolved ---\n" + app.playing_code)
+        assert "flow · " in log_text(app)
+        assert blocks.scales(app.playing_code) <= {"dorian"}
+        assert "setcps (110/60/4)" in app.playing_code
+        assert app.query_one("#code").text == app.playing_code  # editor followed along
+        assert await wait_for(lambda: bool(fake_dirt.plays()), 5)
+        await app.action_quit()

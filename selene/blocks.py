@@ -79,3 +79,54 @@ def sound_names(code: str) -> set[str]:
             if not tok.isdigit():
                 names.add(tok)
     return names
+
+
+# ── Flow rewrites ─────────────────────────────────────────────────────────
+
+ORBIT_STMT = re.compile(r"^d(\d{1,2})\s*\$\s*(.*)$", re.S)
+
+
+def flowify(code: str) -> str:
+    """Route every `dN $ ...` through Flow's per-orbit controls (see flow.py).
+
+    At their defaults the controls are inaudible: gain x1, djf 0.5, room +0,
+    degradeBy 0. The closing paren goes on its own line so an inline comment in
+    the model's code can't swallow it.
+    """
+    out = []
+    for stmt in split_statements(code):
+        m = ORBIT_STMT.match(stmt)
+        if not m or SILENCE.match(stmt):
+            out.append(stmt)
+            continue
+        n, body = m.groups()
+        out.append(
+            f'd{n} $ degradeBy (cF 0 "fl_thin{n}") $ ({body}\n'
+            f'  ) |* gain (cF 1 "fl_gain{n}") # djf (cF 0.5 "fl_tone{n}")'
+            f' |+ room (cF 0 "fl_space{n}")')
+    return "\n".join(out)
+
+
+def as_xfade(stmt: str, cycles: int = 16) -> str:
+    """`dN $ X` -> a crossfade into X over `cycles` cycles. xfadeIn skips dN's
+    own orbit routing, so add it back (d1..d12 map to orbits 0..11)."""
+    m = ORBIT_STMT.match(stmt)
+    if not m:
+        return stmt
+    n, body = m.groups()
+    route = f" |< orbit {int(n) - 1}" if int(n) <= 12 else ""
+    return f"xfadeIn {n} {cycles} $ ({body}\n  ){route}"
+
+
+SCALE = re.compile(r'\bscale\s+"([^"]+)"')
+
+
+def scales(code: str) -> set[str]:
+    return set(SCALE.findall(code))
+
+
+def statement_for(code: str, orbit: str) -> str | None:
+    """The single `dN` statement from a model reply, if there is one."""
+    found = [s for s in split_statements(code)
+             if ORBIT_STMT.match(s) and s.split("$", 1)[0].strip() == orbit]
+    return found[-1] if found else None

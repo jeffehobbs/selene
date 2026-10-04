@@ -4,6 +4,7 @@ import asyncio
 import re
 import shutil
 import socket
+import struct
 from pathlib import Path
 
 import pytest
@@ -22,12 +23,63 @@ def osc_strings(packet: bytes) -> list[str]:
     return [m.decode() for m in re.findall(rb"[\x20-\x7e]{2,}", packet)]
 
 
+def osc_decode(packet: bytes) -> list[tuple[str, list]]:
+    """(address, args) for every message in an OSC packet or bundle."""
+    out = []
+
+    def pad(n):
+        return (n + 4) & ~3
+
+    def message(b):
+        i = b.index(b"\0")
+        addr, j = b[:i].decode(), pad(i)
+        k = b.index(b"\0", j)
+        tags, j = b[j + 1:k].decode(), pad(k)
+        args = []
+        for t in tags:
+            if t == "s":
+                k = b.index(b"\0", j)
+                args.append(b[j:k].decode())
+                j = pad(k)
+            elif t in "fi":
+                args.append(struct.unpack(">f" if t == "f" else ">i", b[j:j + 4])[0])
+                j += 4
+            elif t == "d":
+                args.append(struct.unpack(">d", b[j:j + 8])[0])
+                j += 8
+        out.append((addr, args))
+
+    def walk(b):
+        if b.startswith(b"#bundle"):
+            j = 16
+            while j < len(b):
+                n = struct.unpack(">i", b[j:j + 4])[0]
+                walk(b[j + 4:j + 4 + n])
+                j += 4 + n
+        else:
+            message(b)
+
+    walk(packet)
+    return out
+
+
 class FakeDirt(asyncio.DatagramProtocol):
     def __init__(self):
         self.messages: list[list[str]] = []
+        self.packets: list[bytes] = []
 
     def datagram_received(self, data, addr):
         self.messages.append(osc_strings(data))
+        self.packets.append(data)
+
+    def events(self) -> list[dict]:
+        """/dirt/play messages as {param: value} dicts."""
+        return [dict(zip(args[0::2], args[1::2]))
+                for p in self.packets for addr, args in osc_decode(p) if addr == "/dirt/play"]
+
+    def clear(self) -> None:
+        self.messages.clear()
+        self.packets.clear()
 
     def plays(self) -> list[list[str]]:
         return [m for m in self.messages if any("/dirt/play" in s for s in m)]

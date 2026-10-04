@@ -36,6 +36,7 @@ hpf, resonance, delay, delaytime, delayfeedback, crush, coarse, shape, \
 vowel "a", squiz, accelerate, begin, end, legato, sustain, attack, release.
 - Continuous modulation: `# lpf (range 300 3000 $ slow 4 sine)`.
 - Keep gain at or below 1.1; keep `room`/`size` at or below 0.9.
+- Never use `djf` (reserved). Use lpf/hpf for filtering.
 
 Common mistakes that GHCi rejects:
 - Transformations (every, sometimes, jux, fast, slow, off, whenmod, degradeBy, \
@@ -80,7 +81,14 @@ def build_system_prompt(samples: list[str], synths: list[str]) -> str:
             .replace("{synths}", " ".join(synths)))
 
 
-def user_message(prompt: str, current_code: str) -> str:
+def user_message(prompt: str, current_code: str, unplayed_edits: str = "") -> str:
+    if unplayed_edits.strip():
+        playing = (f"Currently playing:\n```haskell\n{current_code.strip()}\n```\n\n"
+                   if current_code.strip() else "")
+        return (f"{playing}The player has edited the code in the editor but not played it "
+                f"yet. Treat these edits as their intent and build on them, not on what "
+                f"is playing:\n```haskell\n{unplayed_edits.strip()}\n```\n\n"
+                f"Request: {prompt}")
     if current_code.strip():
         return f"Currently playing:\n```haskell\n{current_code.strip()}\n```\n\nRequest: {prompt}"
     return f"Request: {prompt}"
@@ -106,6 +114,19 @@ FIX_HINTS = {
     "parse error": "Haskell layout or punctuation is off: statements start at column 0, "
         "continuation lines are indented, stack items are comma-separated.",
 }
+
+
+def evolve_message(current_code: str, orbit: str, kind: str) -> str:
+    if kind == "add":
+        ask = (f"Add ONE new layer as {orbit} that complements what is playing: sparse, "
+               "in the same key and scale, a different register or role from the others.")
+    else:
+        ask = (f"Evolve only {orbit}: change ONE musical element subtly (rhythm placement, "
+               "a note or two, a transformation, an effect amount). Keep its role, its "
+               "sounds, its density and the key/scale.")
+    return (f"Currently playing:\n```haskell\n{current_code.strip()}\n```\n\n{ask} "
+            f"Do not change the key, scale or tempo; no setcps. Reply with only the "
+            f"{orbit} statement in one ```haskell block.")
 
 
 def fix_message(error: str) -> str:

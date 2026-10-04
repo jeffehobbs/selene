@@ -2,6 +2,8 @@
 
 import argparse
 import asyncio
+import os
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -13,12 +15,17 @@ from textual.containers import Horizontal
 from textual.widgets import Footer, Input, RichLog, Static, TextArea
 
 from . import blocks, catalog
+from .flow import CtrlSender, FlowDirector, ctrl_name, free_udp_port
 from .ghci import BUNDLED_BOOT, Ghci
-from .llm import Ollama, build_system_prompt, fix_message, unknown_sounds_message, user_message
+from .llm import (Ollama, build_system_prompt, evolve_message, fix_message,
+                  unknown_sounds_message, user_message)
 from .superdirt import SuperDirt, dirt_status
 
 SESSIONS = Path.home() / ".local/share/selene"
 HISTORY_TURNS = 4  # prompt/reply pairs of context sent back to the model
+XFADE_CYCLES = 16  # how long an evolved layer takes to crossfade in
+# Test hook: run Flow's clock faster than real time.
+FLOW_SPEED = float(os.environ.get("SELENE_FLOW_SPEED", "1"))
 
 
 class PromptInput(Input):
@@ -84,6 +91,7 @@ class Selene(App):
         Binding("ctrl+e", "play_editor", "Play editor", priority=True),
         Binding("ctrl+r", "retry", "Regenerate", priority=True),
         Binding("ctrl+n", "new_session", "New context", priority=True),
+        Binding("ctrl+f", "flow", "Flow", priority=True),
         Binding("ctrl+b", "boot_dirt", "Boot SuperDirt", priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
@@ -101,7 +109,18 @@ class Selene(App):
         self.muted: set[str] = set()
         self.last_prompt = ""
         self.fresh = False  # next prompt ignores what's playing
-        self.state = {"model": args.model, "ghci": "booting", "dirt": "?", "llm": ""}
+        # Whatever the model last wrote into the editor (streaming, failed, or
+        # cut off by esc). It can differ from what's playing without being the
+        # player's edit.
+        self.model_text = ""
+        self.state = {"model": args.model, "ghci": "booting", "dirt": "?", "llm": "", "flow": ""}
+        # Flow: off at launch. `flow` lives on through the glide home after
+        # Flow is turned off; `flow_on` is whether new code gets the wrappers.
+        self.flow: FlowDirector | None = None
+        self.flow_on = False
+        self.flow_ctrl: CtrlSender | None = None
+        self.flow_timer = None
+        self.flow_t0 = 0.0
         SESSIONS.mkdir(parents=True, exist_ok=True)
         self.session_file = SESSIONS / f"{datetime.now():%Y-%m-%d}.tidal"
 
@@ -141,6 +160,8 @@ class Selene(App):
         bar.append(s["model"], style="dim")
         if s["llm"]:
             bar.append(f"  {s['llm']}", style="italic yellow")
+        if s["flow"]:
+            bar.append(f"   ☯ {s['flow']}", style="magenta")
         orbits = blocks.sounding_orbits(self.playing_code)
         if orbits:
             bar.append("   ▶", style="green")
@@ -171,6 +192,8 @@ class Selene(App):
             target = self.muted ^ {orbit}
         changes = {o: o in target for o in orbits if (o in target) != (o in self.muted)}
         self.muted = target & set(orbits)
+        if self.flow:
+            self.flow.set_muted(self.muted, self._flow_now())
         self._render_bar()
         self._apply_mutes(changes)
 
@@ -230,7 +253,7 @@ class Selene(App):
             self.log_line(f"ollama: {e}", "red")
             self._set(model=f"{self.args.model} (unavailable)")
         try:
-            result = await self.ghci.start()
+            result = await self.ghci.start(ctrl_port=free_udp_port())
         except FileNotFoundError:
             self.log_line(f"can't run {self.args.ghci!r}; install GHC + tidal", "red")
             self._set(ghci="dead")
@@ -271,11 +294,13 @@ class Selene(App):
             self.run_worker(self._resolve_model(), group="services")
         elif name in ("mute", "unmute", "solo"):
             self.orbit_command(name, arg)
+        elif name == "flow":
+            self.action_flow()
         elif name == "new":
             self.action_new_session()
         else:
             self.log_line("commands: /hush /cps N /bpm N /mute N /unmute [N] /solo N "
-                          "/model NAME /new", "yellow")
+                          "/flow /model NAME /new", "yellow")
 
     def orbit_command(self, name: str, arg: str) -> None:
         orbits = blocks.sounding_orbits(self.playing_code)
@@ -320,6 +345,9 @@ class Selene(App):
 
     @work(group="hush")
     async def _hush(self) -> None:
+        if self.flow:
+            # Everything is about to be silent, so no glide: straight to neutral.
+            self._flow_stop(log=False)
         await self.ghci.hush()
         self.playing_code = ""
         self.muted.clear()
@@ -350,15 +378,21 @@ class Selene(App):
         if not code.strip():
             return
         self._code_state("busy")
-        result = await self.ghci.eval(code)
+        result = await self.ghci.eval(self._wrap(code))
         if result.ok:
             if source == "editor":
                 self.playing_code = code
             elif source == "raw":
+                editor = self.query_one("#code", TextArea)
+                clean = not self._editor_dirty()
                 self.playing_code = ("" if code.strip() == "hush"
                                      else merge_layers(self.playing_code, code))
+                if clean:  # keep the editor showing what plays, unless mid-edit
+                    editor.text = self.playing_code
             self._code_state("playing")
-            self._save(code, f"({source})")
+            if source != "flow":  # Flow re-wrapping what plays isn't news
+                self._save(code, f"({source})")
+            self._flow_rebase(player=source != "flow")
         else:
             self._code_state("failed")
         self._render_bar()
@@ -366,11 +400,16 @@ class Selene(App):
     @work(group="play", exclusive=True)
     async def generate(self, prompt: str) -> None:
         editor = self.query_one("#code", TextArea)
+        # Unplayed edits in the editor are the base for this prompt, even after
+        # ctrl+n: they're what the player has in front of them.
+        edits = editor.text if self._editor_dirty() else ""
         context = "" if self.fresh else self.playing_code
         self.fresh = False
         messages = [{"role": "system", "content": self.system_prompt}]
         messages += [{"role": m["role"], "content": m["content"]} for m in self.history]
-        messages.append({"role": "user", "content": user_message(prompt, context)})
+        messages.append({"role": "user", "content": user_message(prompt, context, edits)})
+        if edits:
+            self.log_line("(building on your unplayed edits)", "dim cyan")
         self.log_line(f"» {prompt}", "bold cyan")
 
         for attempt in range(self.args.fix_attempts + 1):
@@ -380,7 +419,7 @@ class Selene(App):
             try:
                 async for chunk in self.ollama.chat(messages):
                     reply += chunk
-                    editor.text = reply
+                    editor.text = self.model_text = reply
                     editor.scroll_end(animate=False)
             except Exception as e:  # noqa: BLE001 - network/model errors go to the log
                 self.log_line(f"ollama: {e}", "red")
@@ -388,7 +427,7 @@ class Selene(App):
                 self._code_state("failed")
                 return
             code = blocks.extract_code(reply)
-            editor.text = code
+            editor.text = self.model_text = code
             messages.append({"role": "assistant", "content": reply})
             unknown = blocks.sound_names(code) - self.known_sounds
             if unknown and attempt < self.args.fix_attempts:
@@ -397,7 +436,7 @@ class Selene(App):
                 messages.append({"role": "user", "content": unknown_sounds_message(unknown)})
                 continue
             self._set(llm="evaluating…")
-            result = await self.ghci.eval(code)
+            result = await self.ghci.eval(self._wrap(code))
             if result.ok:
                 break
             messages.append({"role": "user", "content": fix_message(result.error_text)})
@@ -416,7 +455,162 @@ class Selene(App):
         if unknown:
             self.log_line(f"unknown sounds (will be silent): {', '.join(sorted(unknown))}", "yellow")
         self._save(code, prompt)
+        self._flow_rebase(player=True)
         self._render_bar()
+
+    # ── flow ──────────────────────────────────────────────────────────────
+
+    def _wrap(self, code: str) -> str:
+        return blocks.flowify(code) if self.flow_on else code
+
+    def _editor_dirty(self) -> bool:
+        """The editor holds the player's own unplayed edits."""
+        text = self.query_one("#code", TextArea).text.strip()
+        return text != self.playing_code.strip() and text != self.model_text.strip()
+
+    def _flow_now(self) -> float:
+        return (time.monotonic() - self.flow_t0) * FLOW_SPEED
+
+    def _playing_statements(self) -> dict[str, str]:
+        out = {}
+        for stmt in blocks.split_statements(self.playing_code):
+            orbits = blocks.sounding_orbits(stmt)
+            if orbits:
+                out[orbits[0]] = stmt
+        return out
+
+    def _flow_rebase(self, player: bool) -> None:
+        if not self.flow:
+            return
+        now = self._flow_now()
+        for name, value in self.flow.rebase(self._playing_statements(), now, player=player):
+            self.flow_ctrl.send(name, value)
+        self.flow.set_muted(self.muted, now)
+
+    def action_flow(self) -> None:
+        if self.state["ghci"] != "ready":
+            self.log_line("flow waits for GHCi", "yellow")
+            return
+        if self.flow_on:
+            self.flow_on = False
+            self.flow.start_exit(self._flow_now())
+            self._set(flow="easing out")
+            self.log_line("☯ flow off · easing home", "magenta")
+            return
+        self.flow_on = True
+        if self.flow:  # still gliding home from a moment ago
+            self.flow.resume(self._flow_now())
+        else:
+            self.flow = FlowDirector()
+            self.flow_ctrl = CtrlSender(self.ghci.ctrl_port)
+            self.flow_t0 = time.monotonic()
+            self.flow_timer = self.set_interval(0.1, self._flow_tick)
+        self._flow_rebase(player=False)
+        self._set(flow="flow")
+        self.log_line("☯ flow on", "magenta")
+        if self.args.boot != str(BUNDLED_BOOT):
+            self.log_line("flow needs SELENE_CTRL_PORT support in a custom --boot "
+                          "(see the bundled BootTidal.hs)", "yellow")
+        if self.playing_code:
+            # Re-evaluate with the wrappers; at neutral they change nothing audible.
+            self.evaluate(self.playing_code, source="flow")
+
+    def _flow_stop(self, log: bool = True) -> None:
+        for name, value in self.flow.neutral_updates():
+            self.flow_ctrl.send(name, value)
+        self.flow_timer.stop()
+        self.flow_ctrl.close()
+        self.flow = self.flow_ctrl = self.flow_timer = None
+        self.flow_on = False
+        self._set(flow="")
+        if log:
+            self.log_line("☯ flow stopped", "magenta")
+
+    def _flow_tick(self) -> None:
+        if not self.flow:
+            return
+        updates, events = self.flow.tick(self._flow_now())
+        for name, value in updates:
+            self.flow_ctrl.send(name, value)
+        for e in events:
+            if e.kind == "log":
+                self.log_line(f"flow · {e.detail}", "magenta dim")
+            elif e.kind == "silence":
+                self._flow_silence(e.orbit)
+            elif e.kind == "evolve":
+                busy = any(w.group == "play" and w.is_running for w in self.workers)
+                if busy or self._editor_dirty() or not self.flow_on:
+                    self.flow.evolved(e.orbit, e.detail, ok=False, now=self._flow_now())
+                else:
+                    self._flow_evolve(e.orbit, e.detail)
+        if self.flow.exited:
+            self._flow_stop()
+
+    @work(group="flow-evolve", exclusive=True)
+    async def _flow_silence(self, orbit: str) -> None:
+        result = await self.ghci.eval(f"{orbit} silence")
+        if result.ok:
+            self._adopt(f"{orbit} silence", f"(flow) {orbit} retired")
+            self.log_line(f"flow · {orbit} retired", "magenta dim")
+
+    def _adopt(self, stmt: str, label: str) -> None:
+        """Merge a Flow change into what's playing (and the editor, if untouched)."""
+        clean = not self._editor_dirty()
+        self.playing_code = merge_layers(self.playing_code, stmt)
+        if clean:
+            self.query_one("#code", TextArea).text = self.playing_code
+        self._save(stmt, label)
+        self._flow_rebase(player=False)
+        self._render_bar()
+
+    @work(group="flow-evolve", exclusive=True)
+    async def _flow_evolve(self, orbit: str, kind: str) -> None:
+        verb = "adding" if kind == "add" else "evolving"
+        self._set(flow=f"{verb} {orbit}")
+        messages = [{"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": evolve_message(self.playing_code, orbit, kind)}]
+        keep_scales = blocks.scales(self.playing_code)
+        stmt, ok = None, False
+        for _ in range(self.args.fix_attempts + 1):
+            try:
+                reply = "".join([c async for c in self.ollama.chat(messages)])
+            except Exception as e:  # noqa: BLE001
+                self.log_line(f"flow · ollama: {e}", "red")
+                break
+            messages.append({"role": "assistant", "content": reply})
+            stmt = blocks.statement_for(blocks.extract_code(reply), orbit)
+            problem = None
+            if stmt is None:
+                problem = f"Reply with only the {orbit} statement, starting `{orbit} $`."
+            elif unknown := blocks.sound_names(stmt) - self.known_sounds:
+                problem = (f"Not installed: {', '.join(sorted(unknown))}. "
+                           "Use only sounds from the lists.")
+            elif keep_scales and blocks.scales(stmt) - keep_scales:
+                problem = (f"Keep the key: use only these scales: {', '.join(sorted(keep_scales))}.")
+            if problem:
+                messages.append({"role": "user", "content": problem})
+                continue
+            if not self.flow_on:  # turned off while the model was thinking
+                break
+            if kind == "add":
+                # Arrive silent: the gain control is 0 before the pattern exists.
+                self.flow_ctrl.send(ctrl_name("gain", orbit), 0.0)
+                result = await self.ghci.eval(blocks.flowify(stmt))
+            else:
+                result = await self.ghci.eval(blocks.as_xfade(blocks.flowify(stmt), XFADE_CYCLES))
+            if result.ok:
+                ok = True
+                break
+            if kind == "add" and self.flow_ctrl:
+                self.flow_ctrl.send(ctrl_name("gain", orbit), 1.0)
+            messages.append({"role": "user", "content": fix_message(result.error_text)})
+        if self.flow:
+            if ok:
+                self._adopt(stmt, f"(flow) {verb} {orbit}")
+                how = "swelling in" if kind == "add" else f"crossfading over {XFADE_CYCLES} cycles"
+                self.log_line(f"flow · {verb} {orbit}, {how}", "magenta")
+            self.flow.evolved(orbit, kind, ok, self._flow_now())
+            self._set(flow="flow" if self.flow_on else "easing out")
 
     def _save(self, code: str, label: str) -> None:
         with self.session_file.open("a") as f:
@@ -424,6 +618,8 @@ class Selene(App):
 
     async def action_quit(self) -> None:
         self.log_line("shutting down…", "dim")
+        if self.flow:
+            self._flow_stop(log=False)
         await self.ghci.stop()
         await self.dirt.stop()
         await self.ollama.close()

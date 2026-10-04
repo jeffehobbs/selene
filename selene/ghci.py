@@ -6,6 +6,7 @@ into stdout to keep errors in order with the sentinel.
 """
 
 import asyncio
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +34,7 @@ class Ghci:
                  on_output: Callable[[str], None] = lambda line: None):
         self.ghci = ghci
         self.boot = boot
+        self.ctrl_port = 6010  # set by start(); the bundled boot honors it
         self.on_output = on_output
         self.proc: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
@@ -45,9 +47,13 @@ class Ghci:
     def running(self) -> bool:
         return self.proc is not None and self.proc.returncode is None
 
-    async def start(self, timeout: float = 90) -> EvalResult:
+    async def start(self, timeout: float = 90, ctrl_port: int | None = None) -> EvalResult:
+        env = dict(os.environ)
+        if ctrl_port:
+            self.ctrl_port = ctrl_port
+            env["SELENE_CTRL_PORT"] = str(ctrl_port)
         self.proc = await asyncio.create_subprocess_exec(
-            self.ghci, "-ghci-script", str(self.boot),
+            self.ghci, "-ghci-script", str(self.boot), env=env,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
