@@ -880,11 +880,16 @@ class Selene(App):
 
     @work(group="flow-evolve", exclusive=True)
     async def _flow_evolve(self, orbit: str, kind: str) -> None:
+        if not self.flow_on:  # Flow stopped before this rewrite got going
+            return
         verb = "adding" if kind == "add" else "evolving"
         self._set(flow=f"{verb} {orbit}")
+        # Flow can be turned off (or the app quit) while the model thinks, which
+        # drops the director; settle the depth's settings now.
+        depth = DEPTHS[self.flow_depth]
         messages = [{"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": evolve_message(self.playing_code, orbit, kind,
-                                                               bold=self.flow.depth.bold)}]
+                                                               bold=depth.bold)}]
         keep_scales = blocks.scales(self.playing_code)
         stmt, ok = None, False
         for _ in range(self.args.fix_attempts + 1):
@@ -914,7 +919,7 @@ class Selene(App):
                 result = await self.ghci.eval(blocks.flowify(stmt))
             else:
                 result = await self.ghci.eval(
-                    blocks.as_xfade(blocks.flowify(stmt), self.flow.depth.xfade))
+                    blocks.as_xfade(blocks.flowify(stmt), depth.xfade))
             if result.ok:
                 ok = True
                 break
@@ -925,7 +930,7 @@ class Selene(App):
             if ok:
                 self._adopt(stmt, f"(flow) {verb} {orbit}")
                 how = ("swelling in" if kind == "add"
-                       else f"crossfading over {self.flow.depth.xfade} cycles")
+                       else f"crossfading over {depth.xfade} cycles")
                 self.log_line(f"flow · {verb} {orbit}, {how}", "magenta")
             self.flow.evolved(orbit, kind, ok, self._flow_now())
             self._set(flow="flow" if self.flow_on else "easing out")

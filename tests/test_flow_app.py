@@ -153,3 +153,37 @@ async def test_deep_flow_drops_land_on_phrase_boundaries(fake_dirt, monkeypatch)
                 drops += 1
                 run = []
     assert drops >= 2, f"expected drops in 40 cycles at depth 5; heard {heard}"
+
+
+class SlowModel(NoModel):
+    """Answers a rewrite only after a pause, so Flow can stop meanwhile."""
+
+    async def chat(self, messages):
+        await asyncio.sleep(1.0)
+        yield '```haskell\nd1 $ s "bd*2"\n```'
+
+
+@needs_ghci
+async def test_stopping_flow_mid_rewrite_is_safe(fake_dirt):
+    app = make_app()
+    app.ollama = SlowModel()
+    async with app.run_test(size=(120, 30)) as pilot:
+        assert await wait_for(lambda: app.state["ghci"] == "ready", 60)
+        app.evaluate(CODE, source="editor")
+        assert await wait_for(lambda: bool(app.playing_code), 5)
+        await pilot.press("ctrl+f")
+        # Flow stops between scheduling a rewrite and the rewrite starting
+        # (quitting did this to the end-to-end test)...
+        app._flow_evolve("d1", "vary")
+        app._flow_stop(log=False)
+        await asyncio.sleep(0.3)
+        # ...and while a rewrite is waiting on the model.
+        await pilot.press("ctrl+f")
+        app._flow_evolve("d2", "vary")
+        await asyncio.sleep(0.2)
+        await pilot.press("escape")  # hush stops Flow outright
+        assert await wait_for(lambda: app.flow is None, 3)
+        await asyncio.sleep(1.5)  # the model answers after Flow is gone
+        assert app.playing_code == ""  # nothing was evaluated or adopted
+        await app.action_quit()
+    # Leaving run_test re-raises any worker crash, so getting here is the test.
