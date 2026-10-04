@@ -90,6 +90,19 @@ async def test_prefs_dialog_and_prefer(private_settings, fake_dirt):
         assert settings.load_preferences() == "- lots of reverb\n"
         assert app.playing_code  # esc in the dialogs never hushed the music
 
+        # The footer's Prefs entry (ctrl+t) opens the same dialog.
+        await pilot.press("ctrl+t")
+        assert await wait_for(lambda: dialog_up(app, PrefsScreen), 3)
+        await pilot.press("escape")  # nothing changed: closes without asking
+        assert await wait_for(lambda: not app._modal(), 3)
+        from textual.widgets._footer import FooterKey
+        prefs_button = next(k for k in app.query(FooterKey) if k.key == "ctrl+t")
+        assert prefs_button.description == "Prefs"
+        await pilot.click(prefs_button)  # clicking it works too
+        assert await wait_for(lambda: dialog_up(app, PrefsScreen), 3)
+        await pilot.press("escape")
+        assert await wait_for(lambda: not app._modal(), 3)
+
         app.generate("another beat")
         assert await wait_for(lambda: len(model.systems) == 2, 10)
         assert model.systems[-1].rstrip().endswith("- lots of reverb")

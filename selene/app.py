@@ -222,6 +222,7 @@ class Selene(App):
         Binding("ctrl+s", "save", "Save", priority=True),
         Binding("ctrl+o", "open", "Open", priority=True),
         Binding("ctrl+l", "lanes", "Lanes", priority=True),
+        Binding("ctrl+t", "prefs", "Prefs", priority=True),
         Binding("ctrl+b", "boot_dirt", "SuperDirt", priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
     ]

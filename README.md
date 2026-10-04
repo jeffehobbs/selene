@@ -67,6 +67,7 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 | `ctrl+s` | save the editor to a `.tidal` file (asks for a name the first time) |
 | `ctrl+o` | open a `.tidal` file into the editor (doesn't play it until `ctrl+e`) |
 | `ctrl+l` | lanes on / off |
+| `ctrl+t` | your preferences for the model (also the footer's Prefs button) |
 | `ctrl+b` | boot SuperDirt |
 | `ctrl+q` | quit (hushes, stops anything selene started) |
 | `↑` / `↓` | prompt history |
@@ -102,7 +103,8 @@ has unsaved changes. Replacing a different file, or opening over edits that
 are neither saved nor playing, asks first.
 
 **Your preferences.** `/prefer prefer 808 kits` adds a line to your
-preferences; `/prefs` opens them all for editing (`ctrl+s` saves). They're
+preferences; `/prefs`, `ctrl+t` or the Prefs button in the footer opens them
+all for editing (`ctrl+s` saves). They're
 appended to the model's system prompt, last so they win over its defaults,
 for prompts and Flow's rewrites alike, from the next request on. They live
 in `~/.local/share/selene/preferences.md`; the built-in prompt (sound lists,
