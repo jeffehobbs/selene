@@ -21,6 +21,11 @@ END = "// <<< selene recorder"
 SC_CODE = f"""{BEGIN} v{VERSION}: lets selene record to WAV (/record). Added by selene;
 // delete everything down to the end marker to remove it.
 (
+// Reports the output level while a stop waits for the sound to ring out.
+// (Function.play would take one of the recorder's temporary SynthDef names.)
+SynthDef(\\seleneRecLevel, {{
+    SendReply.kr(Impulse.kr(20), '/selene/rec/level', Amplitude.kr(In.ar(0, 2)).reduce(\\max));
+}}).add;
 OSCdef(\\seleneRecPing, {{ |msg, time, addr|
     addr.sendMsg('/selene/rec/pong', {VERSION}, s.serverRunning.binaryValue,
         s.isRecording.binaryValue);
@@ -48,10 +53,26 @@ OSCdef(\\seleneRecGo, {{ |msg, time, addr|
         addr.sendMsg('/selene/rec/started', s.recorder.path.asString);
     }};
 }}, '/selene/rec/go');
+// /stop TAIL: keep recording until the output has been silent for half a
+// second (reverb and delay rung out), or TAIL seconds, whichever is first.
 OSCdef(\\seleneRecStop, {{ |msg, time, addr|
-    var path = s.recorder.path;
-    if(path.notNil) {{ s.stopRecording }};
-    addr.sendMsg('/selene/rec/stopped', path.asString);
+    var path = s.recorder.path, tail = (msg[1] ? 0).asFloat, began = Main.elapsedTime;
+    var quiet = 0, probe, watch, finish;
+    finish = {{
+        probe !? {{ probe.free }};
+        // A late finish mustn't stop a newer take.
+        if(path.notNil and: {{ s.recorder.path == path }}) {{ s.stopRecording }};
+        // Answer once the server has closed the file and freed its buffer:
+        // a take prepared sooner can get the same buffer number and lose it.
+        fork {{ s.sync; addr.sendMsg('/selene/rec/stopped', path.asString) }};
+    }};
+    if(path.isNil or: {{ tail <= 0 }} or: {{ s.isRecording.not }}) {{ finish.value }} {{
+        probe = Synth.tail(s, \\seleneRecLevel);
+        watch = OSCFunc({{ |m|
+            quiet = if(m[3] < 0.001) {{ quiet + 0.05 }} {{ 0 }};
+            if(quiet >= 0.5 or: {{ Main.elapsedTime - began >= tail }}) {{ watch.free; finish.value }};
+        }}, '/selene/rec/level', s.addr);
+    }};
 }}, '/selene/rec/stop');
 );
 {END}
@@ -96,11 +117,14 @@ def _pad(b: bytes) -> bytes:
     return b + b"\0" * (-len(b) % 4)
 
 
-def osc(address: str, *args: str | int) -> bytes:
-    tags = "," + "".join("s" if isinstance(a, str) else "i" for a in args)
+def osc(address: str, *args: str | int | float) -> bytes:
+    tags = "," + "".join({str: "s", int: "i", float: "f"}[type(a)] for a in args)
     out = _pad(address.encode() + b"\0") + _pad(tags.encode() + b"\0")
     for a in args:
-        out += _pad(a.encode() + b"\0") if isinstance(a, str) else struct.pack(">i", a)
+        if isinstance(a, str):
+            out += _pad(a.encode() + b"\0")
+        else:
+            out += struct.pack(">i" if isinstance(a, int) else ">f", a)
     return out
 
 
@@ -165,8 +189,10 @@ class Recorder:
     async def go(self) -> None:
         await self._ask("/selene/rec/go", expect="/selene/rec/started", timeout=2)
 
-    async def stop(self) -> None:
-        await self._ask("/selene/rec/stop", expect="/selene/rec/stopped", timeout=3)
+    async def stop(self, tail: float = 0.0) -> None:
+        """Stop, after letting the sound ring out for up to `tail` seconds."""
+        await self._ask("/selene/rec/stop", float(tail), expect="/selene/rec/stopped",
+                        timeout=tail + 3)
 
     def close(self) -> None:
         if self.transport:

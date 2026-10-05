@@ -6,8 +6,10 @@ from datetime import datetime
 from pathlib import Path
 
 DEFAULT_PATH = Path.home() / ".local/share/selene/settings.json"
-# record_dir "" means: next to the .tidal files.
-DEFAULTS = {"split": 50.0, "lanes": True, "record_dir": ""}
+# record_dir "" means: next to the .tidal files. record_tail: the most
+# seconds a take keeps going after you stop it, to let reverb and delays ring
+# out (it ends sooner once the output goes silent).
+DEFAULTS = {"split": 50.0, "lanes": True, "record_dir": "", "record_tail": 8.0}
 
 
 def path() -> Path:

@@ -82,9 +82,10 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/cps 0.6`,
 `/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/fade 4 [CYCLES]`,
 `/fade all`, `/stop 4`, `/take 4`, `/prefs`, `/prefer TEXT`, `/flow`, `/split 30` (the log's share of the width; `/split`
-resets), `/save [NAME]`, `/open [NAME]`, `/record`, `/record dir PATH`, `/model NAME`, `/new`
-are commands.
-The split, whether the lanes are showing and where recordings go are
+resets), `/save [NAME]`, `/open [NAME]`, `/record`, `/model NAME`, `/new`
+are commands (`/record tail N` sets the ring-out, `/record dir PATH` the folder).
+The split, whether the lanes are showing, and where recordings go and how
+long they ring out are
 remembered between launches (`~/.local/share/selene/settings.json`). Every
 prompt you've typed is in `~/.local/share/selene/prompt_history.jsonl`.
 
@@ -128,6 +129,14 @@ While something is playing it starts on the next phrase boundary (every
 downbeat. With nothing playing it starts and stops at once. Pressing it
 again before the take starts calls it off. The top bar shows `● rec 1:23`
 while recording; quitting closes the file properly.
+
+A take doesn't end dead on the beat. After the stop point it keeps
+recording so reverb and delay can ring out, and finishes once the output has
+been silent for half a second, or after 8 seconds at most. So fading out
+(`/fade all`) or pressing `esc`, then `ctrl+g`, ends the take on its natural
+tail. If the music is still playing, the take simply runs up to 8 seconds
+longer. `/record tail 15` changes the maximum; `/record tail 0` cuts exactly
+on the beat.
 
 Takes are saved next to your `.tidal` files (`~/Documents/selene`, or wherever
 you last saved or opened one), named after the open file:

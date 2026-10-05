@@ -33,6 +33,7 @@ class FakeSC(asyncio.DatagramProtocol):
     def __init__(self):
         self.answering = True
         self.calls: list[tuple[str, float]] = []
+        self.tails: list[float] = []
         self.path: Path | None = None
         self.recording = False
 
@@ -54,6 +55,7 @@ class FakeSC(asyncio.DatagramProtocol):
                 self.recording = True
                 reply["go"] = ("/selene/rec/started", str(self.path))
             elif name == "stop":
+                self.tails.append(args[0])
                 self.recording = False
                 reply["stop"] = ("/selene/rec/stopped", str(self.path))
             if name in reply:
@@ -168,6 +170,7 @@ async def test_records_on_phrase_boundaries(tmp_path, fake_dirt, fake_sc):
         assert abs(cycle - round(cycle / PHRASE) * PHRASE) < 0.02, cycle
         take = fake_sc.path
         assert take.exists()  # kept
+        assert fake_sc.tails[-1] == 8.0  # rings out (up to the default 8 s)
 
         # Armed and called off: the empty file goes.
         await pilot.press("ctrl+g")
@@ -179,6 +182,8 @@ async def test_records_on_phrase_boundaries(tmp_path, fake_dirt, fake_sc):
         assert not armed.exists()
 
         # /record dir points takes elsewhere (remembered in settings.json).
+        app.command("record tail 0")
+        assert settings.load()["record_tail"] == 0
         app.command(f"record dir {tmp_path / 'takes'}")
         assert settings.load()["record_dir"] == str(tmp_path / "takes")
         app.command("hush")
@@ -186,8 +191,14 @@ async def test_records_on_phrase_boundaries(tmp_path, fake_dirt, fake_sc):
         app.command("record")  # nothing playing: starts at once
         assert await wait_for(lambda: app.rec and app.rec["phase"] == "recording", 2)
         assert fake_sc.path.parent == tmp_path / "takes"
-        await app.action_quit()  # quitting closes the take
-    assert not fake_sc.recording
+        app.command("record")
+        assert await wait_for(lambda: app.rec is None, 2)  # nothing playing: stops at once
+        assert fake_sc.tails[-1] == 0
+        app.command("record")
+        assert await wait_for(lambda: app.rec and app.rec["phase"] == "recording", 2)
+        app.command("record tail 5")
+        await app.action_quit()  # quitting closes the take, without waiting for a tail
+    assert not fake_sc.recording and fake_sc.tails[-1] == 0
 
 
 @needs_ghci
@@ -224,6 +235,7 @@ async def test_adds_recorder_to_startup_and_restarts(tmp_path, fake_dirt, fake_s
 
         await pilot.press("ctrl+g")
         assert await wait_for(lambda: dialog(app), 5)
+        await pilot.pause()  # laid out, so the click lands on the button
         await pilot.click("#yes")
         assert await wait_for(lambda: app.rec and app.rec["phase"] == "recording", 5)
         assert restarts == ["stop", "boot"]
@@ -253,3 +265,11 @@ async def test_offers_to_start_superdirt(monkeypatch):
         await pilot.press("enter")
         assert await wait_for(lambda: booted, 2)
         await app.action_quit()
+
+
+def test_repl_line_is_one_entry():
+    from selene.superdirt import repl_line
+    line = repl_line(recorder.SC_CODE)
+    assert line.endswith(b"\x0c\n") and line.count(b"\n") == 1
+    assert b"//" not in line and b"OSCdef(\\seleneRecStop" in line
+    assert line.count(b"{") == line.count(b"}")

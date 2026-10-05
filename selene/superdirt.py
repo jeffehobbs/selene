@@ -53,6 +53,19 @@ def dirt_status(port: int = DIRT_PORT, timeout: float = 1.0) -> str:
     return "sclang" if dirt_listening(port) else "off"
 
 
+def repl_line(code: str) -> bytes:
+    """Code as one REPL entry. sclang 3.14's REPL runs each line on Enter
+    (^L only clears the screen); older ones run on ^L. So: one line, no
+    `//` comments (they'd swallow the rest), then ^L and Enter."""
+    parts = []
+    for line in code.splitlines():
+        if (i := line.find("//")) >= 0:
+            line = line[:i]
+        if line.strip():
+            parts.append(line.strip())
+    return " ".join(parts).encode() + b"\x0c\n"
+
+
 def find_sclang() -> str | None:
     return shutil.which("sclang") or next((p for p in SCLANG_CANDIDATES if Path(p).exists()), None)
 
@@ -104,11 +117,11 @@ class SuperDirt:
             ready.set_result(False)
 
     async def send(self, code: str) -> bool:
-        """Run code in the sclang selene started (^L ends a REPL entry)."""
+        """Run code in the sclang selene started."""
         if not self.owned:
             return False
         try:
-            self.proc.stdin.write(code.encode() + b"\x0c")
+            self.proc.stdin.write(repl_line(code))
             await self.proc.stdin.drain()
         except (BrokenPipeError, ConnectionResetError):
             return False
@@ -118,7 +131,7 @@ class SuperDirt:
         if not self.owned:
             return
         try:
-            await self.send("Server.killAll; 0.exit;")
+            await self.send("Server.default.quit; 0.exit;")  # killAll would take every scsynth
             await asyncio.wait_for(self.proc.wait(), 5)
         except (asyncio.TimeoutError, BrokenPipeError, ConnectionResetError):
             self.proc.kill()

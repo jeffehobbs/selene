@@ -876,13 +876,25 @@ class Selene(App):
         elif name == "stop":
             if self.rec and self.rec["phase"] != "stopping":
                 self.action_record()
+        elif name == "tail":
+            try:
+                tail = max(0.0, float(rest))
+            except ValueError:
+                self.log_line(f"ring-out after a take: up to "
+                              f"{settings.load()['record_tail']:g} s · /record tail N "
+                              f"(0 cuts on the beat)", "yellow")
+                return
+            settings.save(record_tail=tail)
+            self.log_line(f"takes ring out for up to {tail:g} s" if tail else
+                          "takes stop on the beat, no ring-out", "green")
         elif name == "dir":
             settings.save(record_dir=rest.strip())
             self.log_line(f"recordings go to {self._pretty_path(self._record_dir())}"
                           + ("" if rest.strip() else " (with the .tidal files)"), "green")
         else:
             self.log_line("/record starts or stops · /record dir PATH sets the folder "
-                          "(/record dir alone: next to the .tidal files)", "yellow")
+                          "(/record dir alone: next to the .tidal files) · /record tail N: "
+                          "seconds to let it ring out", "yellow")
 
     def _record_dir(self) -> Path:
         chosen = settings.load()["record_dir"]
@@ -956,11 +968,13 @@ class Selene(App):
         rec["phase"] = "stopping"
         self._render_bar()
         boundary = self._next_boundary()
-        if boundary:
-            self.log_line(f"■ stopping at cycle {boundary[1]}…", "red")
+        tail = float(settings.load()["record_tail"])
+        when = f"at cycle {boundary[1]}" if boundary else "now"
+        self.log_line(f"■ stopping {when}" + (f", then ringing out (up to {tail:g} s)…"
+                                               if tail else "…"), "red")
         await self._until(boundary)
         try:
-            await self.recorder.stop()
+            await self.recorder.stop(tail)
         except RuntimeError as e:
             self.log_line(f"stopping the recording: {e}", "red")
         secs = int(time.time() - rec["since"])
