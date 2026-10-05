@@ -1,6 +1,6 @@
 [project]
 name = "selene"
-version = "1.1.0"
+version = "1.2.0"
 description = "Describe music in words; a local LLM writes TidalCycles; GHCi plays it through SuperDirt."
 readme = "README.md"
 license = "MIT"
