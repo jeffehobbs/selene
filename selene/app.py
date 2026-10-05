@@ -267,6 +267,7 @@ class Selene(App):
         # player's edit.
         self.model_text = ""
         self.state = {"model": args.model, "ghci": "booting", "dirt": "?", "llm": "", "flow": ""}
+        self.announced_ready = False
         # Flow: off at launch. `flow` lives on through the glide home after
         # Flow is turned off; `flow_on` is whether new code gets the wrappers.
         self.flow: FlowDirector | None = None
@@ -444,6 +445,13 @@ class Selene(App):
     def _set(self, **kw) -> None:
         self.state.update(kw)
         self._render_bar()
+        # "Ready." once SuperDirt and Tidal are both up (usually SuperDirt is
+        # last), and again whenever SuperDirt comes back after going away.
+        ready = self.state["dirt"] == "listening" and self.state["ghci"] == "ready"
+        if ready and not self.announced_ready:
+            self.log_line("Ready.", "bold green")
+        if ready or self.state["dirt"] != "listening":
+            self.announced_ready = ready
 
     def log_line(self, text: str, style: str = "") -> None:
         try:

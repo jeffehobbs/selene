@@ -273,3 +273,27 @@ def test_repl_line_is_one_entry():
     assert line.endswith(b"\x0c\n") and line.count(b"\n") == 1
     assert b"//" not in line and b"OSCdef(\\seleneRecStop" in line
     assert line.count(b"{") == line.count(b"}")
+
+
+@needs_ghci
+async def test_says_ready_once_superdirt_is_up(monkeypatch):
+    monkeypatch.setattr(app_module, "dirt_status", lambda *a, **k: "off")
+    app = Selene(parse_args(["--boot", str(TEST_BOOT)]))
+
+    def readies():
+        return sum(s.text.strip() == "Ready." for s in app.query_one("#log").lines)
+
+    async with app.run_test(size=(120, 34)) as pilot:
+        assert await wait_for(lambda: app.state["ghci"] == "ready", 60)
+        assert await wait_for(lambda: dialog(app), 5)
+        await pilot.press("escape")  # not now
+        assert readies() == 0  # Tidal alone isn't ready: nothing would sound
+        app._dirt_line("SuperDirt: listening to Tidal on port 57120")
+        await pilot.pause()
+        assert readies() == 1
+        app._ghci_line("Connected to SuperDirt.")  # already said
+        app._set(dirt="booting")  # a restart
+        app._set(dirt="listening")
+        await pilot.pause()
+        assert readies() == 2
+        await app.action_quit()
