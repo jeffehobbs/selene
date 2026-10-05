@@ -72,7 +72,7 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 | `ctrl+l` | lanes on / off |
 | `ctrl+t` | your preferences for the model (also the footer's Prefs button) |
 | `ctrl+b` | boot SuperDirt |
-| `ctrl+g` | record to WAV: start / stop on the next phrase (also the footer's Rec button) |
+| `ctrl+g` | record to WAV: start / stop on the next phrase (also the footer's Rec button, which reads Stop Rec while recording) |
 | `ctrl+q` | quit (hushes, stops anything selene started) |
 | `↑` / `↓` | prompt history, across launches |
 | drag the divider | resize the ghci log / pattern panels (double-click: back to 50/50) |

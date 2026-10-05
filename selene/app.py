@@ -232,7 +232,9 @@ class Selene(App):
         Binding("ctrl+l", "lanes", "Lanes", priority=True),
         Binding("ctrl+t", "prefs", "Prefs", priority=True),
         Binding("ctrl+b", "boot_dirt", "SuperDirt", priority=True),
+        # One key, two footer labels; check_action shows the one that applies.
         Binding("ctrl+g", "record", "Rec", priority=True),
+        Binding("ctrl+g", "stop_record", "Stop Rec", priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
 
@@ -244,7 +246,7 @@ class Selene(App):
         self.dirt = SuperDirt(on_output=self._dirt_line)
         self.recorder = Recorder()
         # The take in progress: phase (armed/recording/stopping), path, since.
-        self.rec: dict | None = None
+        self._rec: dict | None = None
         self.preferences = settings.load_preferences()
         self.system_prompt = self._build_prompt()
         self.known_sounds = set(catalog.sample_banks()) | set(catalog.synth_names())
@@ -441,6 +443,27 @@ class Selene(App):
             parts = ([f"muted {' '.join(on)}"] if on else []) + \
                     ([f"unmuted {' '.join(off)}"] if off else [])
             self.log_line(" · ".join(parts), "magenta")
+
+    @property
+    def rec(self) -> dict | None:
+        return self._rec
+
+    @rec.setter
+    def rec(self, value: dict | None) -> None:
+        self._rec = value
+        self.refresh_bindings()  # Rec <-> Stop Rec in the footer
+
+    def check_action(self, action: str, parameters) -> bool | None:
+        if action == "record":
+            return self._rec is None
+        if action == "stop_record":
+            if self._rec is None:
+                return False
+            return self._rec["phase"] != "stopping" or None  # ringing out: shown, dimmed
+        return True
+
+    def action_stop_record(self) -> None:
+        self.action_record()
 
     def _set(self, **kw) -> None:
         self.state.update(kw)
@@ -974,6 +997,7 @@ class Selene(App):
     async def _record_stop(self) -> None:
         rec = self.rec
         rec["phase"] = "stopping"
+        self.refresh_bindings()
         self._render_bar()
         boundary = self._next_boundary()
         tail = float(settings.load()["record_tail"])

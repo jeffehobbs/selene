@@ -23,6 +23,11 @@ async def wait_for(cond, timeout, step=0.05):
     return False
 
 
+def footer_labels(app) -> list[str]:
+    from textual.widgets._footer import FooterKey
+    return [k.description for k in app.query(FooterKey) if k.key == "ctrl+g"]
+
+
 def dialog(app):
     return isinstance(app.screen, ConfirmScreen) and bool(app.screen.query("Button"))
 
@@ -153,9 +158,11 @@ async def test_records_on_phrase_boundaries(tmp_path, fake_dirt, fake_sc):
         app.query_one("#code").text = 'setcps 1\nd1 $ s "bd*4"'
         await pilot.press("ctrl+e")
         assert await wait_for(lambda: app.clock.known, 5)
+        assert footer_labels(app) == ["Rec"]
 
         await pilot.press("ctrl+g")
         assert await wait_for(lambda: app.rec and app.rec["phase"] == "armed", 3)
+        assert await wait_for(lambda: footer_labels(app) == ["Stop Rec"], 2)
         assert await wait_for(lambda: app.rec and app.rec["phase"] == "recording", PHRASE + 2)
         went = fake_sc.times("go")[0]
         cycle = app.clock.cycle_at(went + REC_LEAD)
@@ -163,8 +170,9 @@ async def test_records_on_phrase_boundaries(tmp_path, fake_dirt, fake_sc):
         assert fake_sc.path.parent == tmp_path and fake_sc.path.name.startswith("selene-")
         assert fake_sc.path.suffix == ".wav"
 
-        await pilot.press("ctrl+g")
+        await pilot.press("ctrl+g")  # the same key, now Stop Rec
         assert await wait_for(lambda: app.rec is None, PHRASE + 2)
+        assert await wait_for(lambda: footer_labels(app) == ["Rec"], 2)
         stopped = fake_sc.times("stop")[-1]
         cycle = app.clock.cycle_at(stopped + REC_LEAD)
         assert abs(cycle - round(cycle / PHRASE) * PHRASE) < 0.02, cycle
