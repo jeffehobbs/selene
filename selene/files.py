@@ -8,7 +8,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, DirectoryTree, Input, Label, Static, TextArea
+from textual.widgets import Button, DirectoryTree, Input, Static, TextArea
 
 DEFAULT_DIR = Path.home() / "Documents/selene"
 SUFFIX = ".tidal"
@@ -86,27 +86,34 @@ class PathScreen(ModalScreen[Path | None]):
 
 
 class ConfirmScreen(ModalScreen[bool]):
-    """A yes/no for anything that throws work away. Cancel is the default."""
+    """A yes/no. For anything that throws work away (danger), Cancel is the
+    default and sits apart; otherwise the verb is, and esc still declines."""
 
     DEFAULT_CSS = DIALOG_CSS
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
-    def __init__(self, message: str, verb: str):
+    def __init__(self, message: str, verb: str, danger: bool = True, cancel: str = "Cancel"):
         super().__init__()
         self.message = message
         self.verb = verb
+        self.danger = danger
+        self.cancel = cancel
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
-            yield Label(self.message)
-            # Destructive choice at the far end from Cancel, which has focus.
+            yield Static(self.message)
             with Horizontal():
-                yield Button(self.verb, variant="error", id="yes")
-                yield Static(classes="spacer")
-                yield Button("Cancel", variant="primary", id="no")
+                if self.danger:  # destructive choice at the far end from Cancel
+                    yield Button(self.verb, variant="error", id="yes")
+                    yield Static(classes="spacer")
+                    yield Button(self.cancel, variant="primary", id="no")
+                else:
+                    yield Button(self.cancel, id="no")
+                    yield Static(classes="spacer")
+                    yield Button(self.verb, variant="primary", id="yes")
 
     def on_mount(self) -> None:
-        self.query_one("#no", Button).focus()
+        self.query_one("#no" if self.danger else "#yes", Button).focus()
 
     @on(Button.Pressed)
     def pressed(self, event: Button.Pressed) -> None:

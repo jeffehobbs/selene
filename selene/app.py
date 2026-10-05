@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -19,34 +20,40 @@ from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import Footer, Input, RichLog, Static, TextArea
 
-from . import blocks, catalog, settings
+from . import blocks, catalog, recorder, settings
 from .files import DEFAULT_DIR, ConfirmScreen, PathScreen, PrefsScreen, resolve
-from .flow import (DEFAULT_DEPTH, DEPTHS, CtrlSender, FlowDirector, TidalClock, ctrl_name,
-                   free_udp_port)
+from .flow import (DEFAULT_DEPTH, DEPTHS, PHRASE, CtrlSender, FlowDirector, TidalClock,
+                   ctrl_name, free_udp_port)
 from .ghci import BUNDLED_BOOT, Ghci
 from .lanes import LaneModel, Lanes
 from .llm import (Ollama, build_system_prompt, evolve_message, fix_message,
                   unknown_sounds_message, user_message)
-from .superdirt import SuperDirt, dirt_status
+from .recorder import Recorder
+from .superdirt import STARTUP, SuperDirt, dirt_status, stop_external
 
 SESSIONS = Path.home() / ".local/share/selene"
 HISTORY_TURNS = 4  # prompt/reply pairs of context sent back to the model
 DRIFT_EVERY = 10.0  # seconds between Flow's drift summaries in the log
 # Test hook: run Flow's clock faster than real time.
 FLOW_SPEED = float(os.environ.get("SELENE_FLOW_SPEED", "1"))
+# Recording starts and stops this long before a phrase boundary plays, to
+# cover the trip to sclang.
+REC_LEAD = 0.02
 
 
 class PromptInput(Input):
-    """Single-line prompt with shell-style up/down history."""
+    """Single-line prompt with shell-style up/down history, kept across
+    launches (settings.history_path)."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.history: list[str] = []
-        self._pos = 0
+        self.history: list[str] = settings.load_history()
+        self._pos = len(self.history)
 
     def remember(self, text: str) -> None:
         if text and (not self.history or self.history[-1] != text):
             self.history.append(text)
+            settings.append_history(text)
         self._pos = len(self.history)
 
     def on_key(self, event) -> None:
@@ -225,6 +232,7 @@ class Selene(App):
         Binding("ctrl+l", "lanes", "Lanes", priority=True),
         Binding("ctrl+t", "prefs", "Prefs", priority=True),
         Binding("ctrl+b", "boot_dirt", "SuperDirt", priority=True),
+        Binding("ctrl+g", "record", "Rec", priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
 
@@ -234,6 +242,9 @@ class Selene(App):
         self.ollama = Ollama(args.ollama_url, args.model)
         self.ghci = Ghci(args.ghci, Path(args.boot), on_output=self._ghci_line)
         self.dirt = SuperDirt(on_output=self._dirt_line)
+        self.recorder = Recorder()
+        # The take in progress: phase (armed/recording/stopping), path, since.
+        self.rec: dict | None = None
         self.preferences = settings.load_preferences()
         self.system_prompt = self._build_prompt()
         self.known_sounds = set(catalog.sample_banks()) | set(catalog.synth_names())
@@ -304,6 +315,7 @@ class Selene(App):
         self._render_bar()
         self.start_services()
         self.set_interval(1.0, self._discover)
+        self.set_interval(1.0, lambda: self.rec and self._render_bar())  # rec timer
 
     # ── status ────────────────────────────────────────────────────────────
 
@@ -324,6 +336,14 @@ class Selene(App):
             bar.append(f"  {s['llm']}", style="italic yellow")
         if s["flow"]:
             bar.append(f"   ☯{self.flow_depth} {s['flow']}", style="magenta")
+        if self.rec:
+            if self.rec["phase"] == "armed":
+                bar.append("   ◌ rec armed", style="yellow")
+            else:
+                secs = int(time.time() - self.rec["since"])
+                bar.append(f"   ● rec {secs // 60}:{secs % 60:02d}", style="bold red")
+                if self.rec["phase"] == "stopping":
+                    bar.append(" ■", style="red")
         orbits = self._all_orbits()
         # Remember when each layer was last tracked, including the moment one
         # stops being tracked (see _discover).
@@ -455,8 +475,15 @@ class Selene(App):
     @work(group="services")
     async def start_services(self) -> None:
         self._set(dirt=await asyncio.to_thread(dirt_status))
-        if self.args.superdirt and self.state["dirt"] == "off":
-            self.action_boot_dirt()
+        if self.state["dirt"] == "off":
+            if self.args.superdirt:
+                self.action_boot_dirt()
+            else:
+                self.push_screen(
+                    ConfirmScreen("SuperDirt isn't running, so nothing will sound.\n\n"
+                                  "Start SuperCollider + SuperDirt now?",
+                                  "Start", danger=False, cancel="Not now"),
+                    lambda yes: yes and self.action_boot_dirt())
         elif self.state["dirt"] == "sclang":
             self.log_line("sclang is running but SuperDirt isn't answering; "
                           "run SuperDirt.start in SuperCollider", "yellow")
@@ -529,10 +556,12 @@ class Selene(App):
             self.action_open(arg.strip())
         elif name == "new":
             self.action_new_session()
+        elif name == "record":
+            self.record_command(arg.strip())
         else:
             self.log_line("commands: /hush /cps N /bpm N /mute N /unmute [N] /solo N "
                           "/prefs /prefer TEXT /fade N|held|all [CYCLES] /stop N|held|all /take N /flow [1-5] /split [N] /save [NAME] /open [NAME] "
-                          "/model NAME /new", "yellow")
+                          "/record [stop|dir PATH] /model NAME /new", "yellow")
 
     def orbit_command(self, name: str, arg: str) -> None:
         orbits = self._all_orbits()
@@ -806,19 +835,196 @@ class Selene(App):
 
     @work(group="services", exclusive=False)
     async def action_boot_dirt(self) -> None:
+        await self._boot_dirt()
+
+    async def _boot_dirt(self) -> bool:
         status = await asyncio.to_thread(dirt_status)
         if status == "listening":
             self._set(dirt="listening")
             self.log_line("SuperDirt already listening on 57120", "green")
-            return
+            return True
         if status == "sclang":
             # Another sclang (e.g. the SC IDE) owns 57120; a second one can't bind it.
             self._set(dirt="sclang")
             self.log_line("sclang already holds 57120; start SuperDirt there", "yellow")
-            return
+            return False
         self._set(dirt="booting")
         ok = await self.dirt.boot()
         self._set(dirt="listening" if ok else "off")
+        if ok:  # ours, so no need to touch startup.scd for recording
+            await self.dirt.send(recorder.SC_CODE)
+        return ok
+
+    # ── recording ─────────────────────────────────────────────────────────
+
+    def action_record(self) -> None:
+        """Start recording at the next phrase; again: stop at the next phrase
+        (or call off a take that hasn't started)."""
+        if self._modal():
+            return
+        if self.rec is None:
+            self._record_start()
+        elif self.rec["phase"] == "armed":
+            self.workers.cancel_group(self, "record")
+        elif self.rec["phase"] == "recording":
+            self._record_stop()
+
+    def record_command(self, arg: str) -> None:
+        name, _, rest = arg.partition(" ")
+        if not arg:
+            self.action_record()
+        elif name == "stop":
+            if self.rec and self.rec["phase"] != "stopping":
+                self.action_record()
+        elif name == "dir":
+            settings.save(record_dir=rest.strip())
+            self.log_line(f"recordings go to {self._pretty_path(self._record_dir())}"
+                          + ("" if rest.strip() else " (with the .tidal files)"), "green")
+        else:
+            self.log_line("/record starts or stops · /record dir PATH sets the folder "
+                          "(/record dir alone: next to the .tidal files)", "yellow")
+
+    def _record_dir(self) -> Path:
+        chosen = settings.load()["record_dir"]
+        return Path(chosen).expanduser() if chosen else self.file_dir
+
+    def _record_path(self) -> Path:
+        stem = self.current_file.stem if self.current_file else "selene"
+        base = self._record_dir() / f"{stem}-{datetime.now():%Y-%m-%d-%H%M%S}.wav"
+        path, n = base, 2
+        while path.exists():
+            path, n = base.with_stem(f"{base.stem}-{n}"), n + 1
+        return path
+
+    def _next_boundary(self) -> tuple[float, int] | None:
+        """(when it plays, cycle) of the next phrase boundary there's still time
+        to catch; None when nothing's playing, meaning now."""
+        cycle = self._cycle()
+        if cycle is None or not self._all_orbits():
+            return None
+        at = math.ceil(cycle / PHRASE) * PHRASE
+        while self.clock.play_time(at) - time.time() < REC_LEAD + 0.05:
+            at += PHRASE
+        return self.clock.play_time(at), at
+
+    async def _until(self, boundary: tuple[float, int] | None) -> None:
+        if boundary:
+            await asyncio.sleep(max(0.0, boundary[0] - REC_LEAD - time.time()))
+
+    @work(group="record", exclusive=True)
+    async def _record_start(self) -> None:
+        pong = await self.recorder.ping()
+        if (pong is None or pong.version < recorder.VERSION) and not await self._get_recorder():
+            return
+        path = self._record_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self.log_line(f"can't record to {path.parent}: {e.strerror or e}", "red")
+            return
+        self.rec = {"phase": "armed", "path": path, "since": time.time()}
+        self._render_bar()
+        started = False
+        try:
+            await self.recorder.prepare(path)
+            boundary = self._next_boundary()
+            if boundary:
+                self.log_line(f"◌ recording from cycle {boundary[1]}…", "yellow")
+            await self._until(boundary)
+            await self.recorder.go()
+            started = True
+            self.rec.update(phase="recording", since=time.time())
+            self.log_line(f"● recording to {self._pretty_path(path)}", "red")
+        except RuntimeError as e:
+            self.log_line(f"couldn't record: {e}", "red")
+        except asyncio.CancelledError:
+            self.log_line("recording called off", "yellow")
+            raise
+        finally:
+            if not started:  # release the prepared file and drop its empty header
+                try:
+                    await self.recorder.stop()
+                except RuntimeError:
+                    pass
+                path.unlink(missing_ok=True)
+                self.rec = None
+            self._render_bar()
+
+    @work(group="record-stop")
+    async def _record_stop(self) -> None:
+        rec = self.rec
+        rec["phase"] = "stopping"
+        self._render_bar()
+        boundary = self._next_boundary()
+        if boundary:
+            self.log_line(f"■ stopping at cycle {boundary[1]}…", "red")
+        await self._until(boundary)
+        try:
+            await self.recorder.stop()
+        except RuntimeError as e:
+            self.log_line(f"stopping the recording: {e}", "red")
+        secs = int(time.time() - rec["since"])
+        self.rec = None
+        self.log_line(f"■ saved {self._pretty_path(rec['path'])} "
+                      f"({secs // 60}:{secs % 60:02d})", "green")
+        self._render_bar()
+
+    async def _get_recorder(self) -> bool:
+        """Get the recorder into sclang: type it into ours, or (with the
+        player's OK) add it to startup.scd and restart theirs."""
+        status = await asyncio.to_thread(dirt_status)
+        if self.dirt.owned:
+            await self.dirt.send(recorder.SC_CODE)
+        elif status == "off":
+            if not await self.push_screen_wait(ConfirmScreen(
+                    "SuperCollider isn't running.\n\nStart it with SuperDirt, then record?",
+                    "Start", danger=False, cancel="Not now")):
+                return False
+            if not await self._boot_dirt():
+                return False
+        else:
+            installed = recorder.installed_version(STARTUP)
+            where = self._pretty_path(STARTUP)
+            if installed == recorder.VERSION:
+                message = (f"The recorder is in {where}, but SuperCollider was started "
+                           f"before it was added.\n\nRestart SuperCollider to load it? Sound "
+                           f"stops for a few seconds; if the SuperCollider IDE is running "
+                           f"it, the IDE's interpreter stops too.")
+                verb = "Restart"
+            else:
+                message = (f"Recording needs a few lines in SuperCollider's startup file, "
+                           f"{where}.\n\nSelene will back it up (startup.scd.selene-bak), "
+                           f"{'update' if installed else 'add'} the recorder at the end, and "
+                           f"restart SuperCollider to load it. Sound stops for a few seconds; "
+                           f"if the SuperCollider IDE is running it, the IDE's interpreter "
+                           f"stops too.")
+                verb = "Update & restart" if installed else "Add & restart"
+            if not await self.push_screen_wait(ConfirmScreen(message, verb)):
+                self.log_line("not recording", "yellow")
+                return False
+            if installed != recorder.VERSION:
+                try:
+                    backup = recorder.install(STARTUP)
+                except OSError as e:
+                    self.log_line(f"couldn't edit {where}: {e.strerror or e}", "red")
+                    return False
+                self.log_line(f"added the recorder to {where}"
+                              + (f" (backup: {backup.name})" if backup else ""), "green")
+            self.log_line("restarting SuperCollider…", "yellow")
+            self._set(dirt="booting")
+            if not await stop_external():
+                self._set(dirt=await asyncio.to_thread(dirt_status))
+                self.log_line("couldn't stop the running SuperCollider; quit it and press "
+                              "ctrl+b", "red")
+                return False
+            if not await self._boot_dirt():
+                return False
+        for _ in range(10):  # sclang may still be digesting the code
+            pong = await self.recorder.ping(0.5)
+            if pong and pong.version >= recorder.VERSION:
+                return True
+        self.log_line("SuperCollider didn't pick up the recorder", "red")
+        return False
 
     # ── generate / evaluate ───────────────────────────────────────────────
 
@@ -1281,6 +1487,14 @@ class Selene(App):
         self.exit()
 
     async def _shut_down(self) -> None:
+        self.workers.cancel_group(self, "record")
+        if self.rec:  # close the file properly before sclang goes away
+            self.rec = None
+            try:
+                await self.recorder.stop()
+            except RuntimeError:
+                pass
+        self.recorder.close()
         for timer in self.fade_timers:
             timer.stop()
         self.fade_timers.clear()

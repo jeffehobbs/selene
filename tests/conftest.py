@@ -104,3 +104,10 @@ def private_settings(tmp_path, monkeypatch):
 
 
 needs_ghci = pytest.mark.skipif(shutil.which("ghci") is None, reason="ghci not installed")
+
+
+@pytest.fixture(autouse=True)
+def dirt_up(monkeypatch):
+    """Tests never offer to start the player's SuperDirt (or look for it)."""
+    import selene.app
+    monkeypatch.setattr(selene.app, "dirt_status", lambda *a, **k: "listening")

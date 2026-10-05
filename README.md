@@ -31,8 +31,11 @@ d2"*, *"half-time the drums"*, *"make it sparser"*.
 - **Flow mode.** `ctrl+f` lets the music play itself, from slow drift to
   drops, fills and rhythm mutations on the beat, as active as you set it with
   `/flow 1`–`5`. Off until you turn it on. See [Flow](#flow).
+- **Record to WAV.** `ctrl+g` records what SuperCollider plays, starting
+  and stopping on the beat. See [Recording](#recording).
 - **Session log.** Every pattern that plays is appended to
-  `~/.local/share/selene/<date>.tidal`.
+  `~/.local/share/selene/<date>.tidal`, and every prompt you type is kept
+  (`↑` reaches back across launches).
 
 ## Requirements
 
@@ -48,8 +51,8 @@ d2"*, *"half-time the drums"*, *"make it sparser"*.
 
 ```sh
 git clone https://github.com/jeffehobbs/selene && cd selene
-uv run selene                # SuperDirt already running in SuperCollider
-uv run selene --superdirt    # or let selene boot sclang + SuperDirt for you
+uv run selene                # offers to start SuperDirt if it isn't running
+uv run selene --superdirt    # starts it without asking
 ```
 
 Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/selene`.
@@ -69,8 +72,9 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 | `ctrl+l` | lanes on / off |
 | `ctrl+t` | your preferences for the model (also the footer's Prefs button) |
 | `ctrl+b` | boot SuperDirt |
+| `ctrl+g` | record to WAV: start / stop on the next phrase (also the footer's Rec button) |
 | `ctrl+q` | quit (hushes, stops anything selene started) |
-| `↑` / `↓` | prompt history |
+| `↑` / `↓` | prompt history, across launches |
 | drag the divider | resize the ghci log / pattern panels (double-click: back to 50/50) |
 | click `dN` | mute / unmute that orbit |
 | shift-click `dN` | solo that orbit (again to un-solo) |
@@ -78,9 +82,11 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/cps 0.6`,
 `/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/fade 4 [CYCLES]`,
 `/fade all`, `/stop 4`, `/take 4`, `/prefs`, `/prefer TEXT`, `/flow`, `/split 30` (the log's share of the width; `/split`
-resets), `/save [NAME]`, `/open [NAME]`, `/model NAME`, `/new` are commands.
-The split and whether the lanes are showing are remembered between launches
-(`~/.local/share/selene/settings.json`).
+resets), `/save [NAME]`, `/open [NAME]`, `/record`, `/record dir PATH`, `/model NAME`, `/new`
+are commands.
+The split, whether the lanes are showing and where recordings go are
+remembered between launches (`~/.local/share/selene/settings.json`). Every
+prompt you've typed is in `~/.local/share/selene/prompt_history.jsonl`.
 
 **Held layers.** Like Tidal itself, playing new code doesn't stop layers it
 doesn't mention: open a file with `d1`–`d3` over one with `d1`–`d6` and
@@ -113,6 +119,33 @@ syntax rules) stays as it is.
 Edits you make in the editor are the base for your next prompt even if you
 haven't played them yet, so you can sketch a change and ask the model to run
 with it.
+
+## Recording
+
+`ctrl+g` (or `/record`) records SuperCollider's output to a 24-bit WAV.
+While something is playing it starts on the next phrase boundary (every
+4 cycles) and stops on one when you press it again, so takes start on the
+downbeat. With nothing playing it starts and stops at once. Pressing it
+again before the take starts calls it off. The top bar shows `● rec 1:23`
+while recording; quitting closes the file properly.
+
+Takes are saved next to your `.tidal` files (`~/Documents/selene`, or wherever
+you last saved or opened one), named after the open file:
+`dub-2026-10-05-213012.wav`. `/record dir ~/Music/takes` sends them elsewhere;
+`/record dir` alone goes back to the `.tidal` folder.
+
+SuperCollider's own recorder does the writing, which needs a few lines of
+code inside sclang:
+
+- **If selene started SuperCollider** (`--superdirt`, `ctrl+b`, or yes to
+  the offer at launch), it adds them itself. Nothing on disk changes.
+- **If SuperCollider was already running**, the first `ctrl+g` asks to add them
+  to your `startup.scd`. Selene backs it up as `startup.scd.selene-bak` and
+  adds a marked block at the end (`// >>> selene recorder` … `// <<< selene
+  recorder`; delete it to remove the recorder). It then restarts that
+  SuperCollider so the code loads, and starts recording. Sound drops for a
+  few seconds, and if the SuperCollider IDE was running it, the IDE's
+  interpreter stops.
 
 ## Flow
 
@@ -164,7 +197,7 @@ and `SELENE_TAP_PORT` lines from the bundled `BootTidal.hs` for Flow to work.
 --ollama-url URL    default http://localhost:11434
 --ghci PATH         GHCi executable (default: ghci)
 --boot FILE         BootTidal.hs to load (default: the bundled one)
---superdirt         boot SuperCollider + SuperDirt if it isn't running
+--superdirt         boot SuperCollider + SuperDirt if it isn't running (default: ask)
 --dir FOLDER        where .tidal files are saved/opened (default: ~/Documents/selene)
 --flow-depth N      how active Flow is when turned on, 1–5 (default: 3)
 --fix-attempts N    times to feed errors back to the model (default: 2)

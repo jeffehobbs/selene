@@ -16,7 +16,7 @@ def test_settings_roundtrip_and_defaults(private_settings):
     assert settings.load() == settings.DEFAULTS
     settings.save(split=31.5)
     settings.save(lanes=False)
-    assert json.loads(private_settings.read_text()) == {"split": 31.5, "lanes": False}
+    assert json.loads(private_settings.read_text()) == {"split": 31.5, "lanes": False, "record_dir": ""}
     private_settings.write_text("not json")
     assert settings.load() == settings.DEFAULTS
 

@@ -2,10 +2,12 @@
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 DEFAULT_PATH = Path.home() / ".local/share/selene/settings.json"
-DEFAULTS = {"split": 50.0, "lanes": True}
+# record_dir "" means: next to the .tidal files.
+DEFAULTS = {"split": 50.0, "lanes": True, "record_dir": ""}
 
 
 def path() -> Path:
@@ -51,3 +53,35 @@ def save_preferences(text: str) -> None:
     tmp = target.with_suffix(".tmp")
     tmp.write_text(text.rstrip() + "\n" if text.strip() else "")
     tmp.replace(target)
+
+
+def history_path() -> Path:
+    """Every prompt the player has typed, oldest first, one JSON object a line."""
+    return path().with_name("prompt_history.jsonl")
+
+
+def load_history() -> list[str]:
+    try:
+        lines = history_path().read_text().splitlines()
+    except OSError:
+        return []
+    out: list[str] = []
+    for line in lines:
+        try:
+            text = json.loads(line)["text"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        if text and (not out or out[-1] != text):
+            out.append(text)
+    return out
+
+
+def append_history(text: str) -> None:
+    try:
+        target = history_path()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a") as f:
+            f.write(json.dumps({"at": datetime.now().isoformat(timespec="seconds"),
+                                "text": text}) + "\n")
+    except OSError:
+        pass  # history is a nicety; never fail over it
