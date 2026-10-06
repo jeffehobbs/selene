@@ -34,6 +34,14 @@ def dirt_listening(port: int = DIRT_PORT) -> bool:
 
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+# scsynth quits when the input device runs at another rate than the output,
+# e.g. AirPods as both: their mic is 24 kHz, their playback 48 kHz.
+RATE_MISMATCH = "Input sample rate is"
+# SuperDirt never listens, so any built-in mic will do; opening the AirPods mic
+# would also drop them into low-quality headset mode.
+USE_BUILTIN_MIC = ('s.options.inDevice = ServerOptions.inDevices.detect { |d| '
+                   'd.contains("MacBook") or: { d.contains("Built-in") } or: '
+                   '{ d.contains("Mac mini") } or: { d.contains("iMac") } };')
 HANDSHAKE = b"/dirt/handshake\0,\0\0\0"  # OSC message, no arguments
 
 
@@ -77,6 +85,8 @@ class SuperDirt:
     def __init__(self, on_output: Callable[[str], None] = lambda line: None):
         self.on_output = on_output
         self.proc: asyncio.subprocess.Process | None = None
+        self.startup: str | None = None  # the file that starts SuperDirt
+        self.retried_input = False
 
     @property
     def owned(self) -> bool:
@@ -98,9 +108,10 @@ class SuperDirt:
         # sclang always runs the user's startup.scd. If that already starts
         # SuperDirt, loading our script too would boot it twice.
         uses_startup = STARTUP.exists() and "SuperDirt" in STARTUP.read_text(errors="ignore")
+        self.startup = str(STARTUP if uses_startup else BUNDLED_STARTUP)
+        self.retried_input = False
         if not uses_startup:
-            path = str(BUNDLED_STARTUP).replace("\\", "\\\\").replace('"', '\\"')
-            await self.send(f'"{path}".load;')
+            await self.send(self._load_startup())
         try:
             return await asyncio.wait_for(ready, timeout)
         except asyncio.TimeoutError:
@@ -116,8 +127,24 @@ class SuperDirt:
                 self.on_output(line)
             if "SuperDirt: listening" in line and not ready.done():
                 ready.set_result(True)
+            if RATE_MISMATCH in line and not self.retried_input:
+                self.retried_input = True
+                asyncio.create_task(self._retry_with_builtin_mic())
         if not ready.done():
             ready.set_result(False)
+
+    def _load_startup(self) -> str:
+        path = self.startup.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{path}".load;'
+
+    async def _retry_with_builtin_mic(self) -> None:
+        """The server quit over the input's sample rate: boot it again with the
+        built-in mic as input. The startup file sets the other options and
+        starts SuperDirt; it leaves inDevice alone."""
+        self.on_output("the input device's sample rate doesn't match the output's "
+                       "(AirPods?); retrying with the built-in mic as input")
+        await asyncio.sleep(1)  # let the dead server's boot attempt give up
+        await self.send(USE_BUILTIN_MIC + " " + self._load_startup())
 
     async def send(self, code: str) -> bool:
         """Run code in the sclang selene started."""
