@@ -38,8 +38,9 @@ HANDSHAKE = b"/dirt/handshake\0,\0\0\0"  # OSC message, no arguments
 
 
 def dirt_status(port: int = DIRT_PORT, timeout: float = 1.0) -> str:
-    """'listening' if SuperDirt answers a handshake, 'sclang' if only the port
-    is held, else 'off'. Blocking; call from a thread."""
+    """'listening' if SuperDirt answers a handshake; 'stray' if the port is
+    held only by a leftover scsynth (see stray_servers); 'sclang' if it's held
+    otherwise; else 'off'. Blocking; call from a thread."""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.settimeout(timeout)
         s.bind(("127.0.0.1", 0))
@@ -50,7 +51,9 @@ def dirt_status(port: int = DIRT_PORT, timeout: float = 1.0) -> str:
                 return "listening"
         except (TimeoutError, ConnectionRefusedError, OSError):
             pass
-    return "sclang" if dirt_listening(port) else "off"
+    if not dirt_listening(port):
+        return "off"
+    return "stray" if stray_servers(port) else "sclang"
 
 
 def repl_line(code: str) -> bytes:
@@ -146,6 +149,59 @@ def port_holders(port: int = DIRT_PORT) -> list[int]:
     except (OSError, subprocess.TimeoutExpired):
         return []
     return [int(p) for p in out.split() if p.isdigit() and int(p) != os.getpid()]
+
+
+def _processes(pids) -> dict[int, tuple[int, str, str]]:
+    """pid -> (parent pid, command name, start time) for the ones still running."""
+    pids = [str(p) for p in pids]
+    if not pids:
+        return {}
+    try:
+        out = subprocess.run(["ps", "-o", "pid=,ppid=,lstart=,comm=", "-p", ",".join(pids)],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    rows = {}
+    for line in out.splitlines():
+        # lstart is five words: "Tue Oct  6 06:12:27 2026"
+        parts = line.split(None, 7)
+        if len(parts) == 8 and parts[0].isdigit():
+            rows[int(parts[0])] = (int(parts[1]), Path(parts[7]).name, " ".join(parts[2:7]))
+    return rows
+
+
+def stray_servers(port: int = DIRT_PORT) -> dict[int, str]:
+    """Leftover scsynths holding the SuperDirt port: pid -> when it started.
+
+    scsynth inherits sclang's open sockets, so when an sclang dies without
+    quitting its server (killed, crashed), the orphaned scsynth keeps 57120
+    and nothing else can bind it. Counts only if every holder is an scsynth
+    and none of them still has an sclang parent; otherwise it's somebody's
+    working SuperCollider."""
+    holders = _processes(port_holders(port))
+    if not holders or any(comm != "scsynth" for _, comm, _ in holders.values()):
+        return {}
+    parents = _processes({ppid for ppid, _, _ in holders.values()})
+    if any(comm == "sclang" for _, comm, _ in parents.values()):
+        return {}
+    return {pid: started for pid, (_, _, started) in holders.items()}
+
+
+async def stop_strays(pids, port: int = DIRT_PORT, timeout: float = 5) -> bool:
+    """Stop the given leftover scsynths (only ones that are still strays, in
+    case a pid was reused) and wait for the port to come free."""
+    targets = set(pids) & set(stray_servers(port))
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in targets:
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+        for _ in range(int(timeout / 0.1)):
+            if not dirt_listening(port):
+                return True
+            await asyncio.sleep(0.1)
+    return False
 
 
 async def stop_external(port: int = DIRT_PORT, timeout: float = 5) -> bool:

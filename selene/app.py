@@ -29,7 +29,8 @@ from .lanes import LaneModel, Lanes
 from .llm import (Ollama, build_system_prompt, evolve_message, fix_message,
                   unknown_sounds_message, user_message)
 from .recorder import Recorder
-from .superdirt import STARTUP, SuperDirt, dirt_status, stop_external
+from .superdirt import (DIRT_PORT, STARTUP, SuperDirt, dirt_status, stop_external, stop_strays,
+                        stray_servers)
 
 SESSIONS = Path.home() / ".local/share/selene"
 HISTORY_TURNS = 4  # prompt/reply pairs of context sent back to the model
@@ -337,7 +338,7 @@ class Selene(App):
         bar.append("   ")
         bar.append("● ", style=dot).append(f"ghci {s['ghci']}")
         bar.append("   ")
-        label = {"sclang": "not started", "?": "checking"}.get(s["dirt"], s["dirt"])
+        label = {"sclang": "not started", "stray": "blocked", "?": "checking"}.get(s["dirt"], s["dirt"])
         bar.append("● ", style=dirt).append(f"superdirt {label}")
         bar.append("   ")
         light = {"ready": "green", "missing": "red", "down": "red"}.get(s["ollama"], "yellow")
@@ -524,6 +525,8 @@ class Selene(App):
                                   "Start SuperCollider + SuperDirt now?",
                                   "Start", danger=False, cancel="Not now"),
                     lambda yes: yes and self.action_boot_dirt())
+        elif self.state["dirt"] == "stray":
+            self.action_boot_dirt()  # it asks before clearing the stray, --superdirt or not
         elif self.state["dirt"] == "sclang":
             self.log_line("sclang is running but SuperDirt isn't answering; "
                           "run SuperDirt.start in SuperCollider", "yellow")
@@ -942,12 +945,39 @@ class Selene(App):
             self._set(dirt="sclang")
             self.log_line("sclang already holds 57120; start SuperDirt there", "yellow")
             return False
+        if status == "stray" and not await self._clear_strays():
+            return False
         self._set(dirt="booting")
         ok = await self.dirt.boot()
         self._set(dirt="listening" if ok else "off")
         if ok:  # ours, so no need to touch startup.scd for recording
             await self.dirt.send(recorder.SC_CODE)
         return ok
+
+    async def _clear_strays(self) -> bool:
+        """A leftover scsynth holds SuperDirt's port: offer to stop it."""
+        strays = await asyncio.to_thread(stray_servers)
+        if not strays:  # gone by itself since we looked
+            return True
+        self._set(dirt="stray")
+        which = ", ".join(f"pid {pid}, running since {started}" for pid, started in strays.items())
+        self.log_line(f"a leftover SuperCollider server ({which}) holds port {DIRT_PORT}",
+                      "yellow")
+        if not await self.push_screen_wait(ConfirmScreen(
+                f"A leftover SuperCollider server (scsynth, {which}) is holding port "
+                f"{DIRT_PORT}, so SuperDirt can't start and nothing will sound. Its "
+                f"sclang is gone, so nothing else is using it.\n\n"
+                f"Stop it and start SuperDirt?", "Stop it", cancel="Not now")):
+            self.log_line(f"leaving it; quit it yourself (kill {' '.join(map(str, strays))}) "
+                          f"and press ctrl+b", "yellow")
+            return False
+        if not await stop_strays(strays):
+            self.log_line(f"couldn't stop the leftover scsynth; try "
+                          f"kill -9 {' '.join(map(str, strays))}, then ctrl+b", "red")
+            self._set(dirt=await asyncio.to_thread(dirt_status))
+            return False
+        self.log_line("stopped the leftover scsynth", "green")
+        return True
 
     # ── recording ─────────────────────────────────────────────────────────
 
@@ -1089,6 +1119,9 @@ class Selene(App):
                     "SuperCollider isn't running.\n\nStart it with SuperDirt, then record?",
                     "Start", danger=False, cancel="Not now")):
                 return False
+            if not await self._boot_dirt():
+                return False
+        elif status == "stray":  # _boot_dirt asks before clearing it
             if not await self._boot_dirt():
                 return False
         else:
