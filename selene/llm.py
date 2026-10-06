@@ -178,6 +178,24 @@ class Ollama:
         r.raise_for_status()
         return [m["name"] for m in r.json().get("models", [])]
 
+    async def installed(self) -> list[dict]:
+        """Installed models, by name, with Ollama's size and details for each."""
+        r = await self.client.get(f"{self.url}/api/tags")
+        r.raise_for_status()
+        return sorted(r.json().get("models", []), key=lambda m: m["name"])
+
+    async def loaded(self) -> set[str]:
+        """Models Ollama has in memory right now."""
+        r = await self.client.get(f"{self.url}/api/ps")
+        r.raise_for_status()
+        return {m["name"] for m in r.json().get("models", [])}
+
+    async def warm(self) -> None:
+        """Load the model into memory now, so the first prompt doesn't wait."""
+        r = await self.client.post(f"{self.url}/api/generate", json={"model": self.model})
+        if r.status_code >= 400:
+            raise RuntimeError(r.text)
+
     async def resolve_model(self) -> str:
         """Accept a bare family name like "gemma4" and match an installed tag."""
         installed = await self.models()

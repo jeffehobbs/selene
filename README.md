@@ -20,6 +20,11 @@ d2"*, *"half-time the drums"*, *"make it sparser"*.
   SuperDirt synths you actually have, and code naming sounds you don't have is
   sent back for a fix before it plays.
 - **Everything local.** No cloud APIs; default model is `gemma4:31b-mlx`.
+- **Swap models.** `ctrl+k` lists your installed Ollama models with their
+  size, parameters, quantization and which are in memory; pick one and it
+  loads straight away. The top bar's model light is green when it's ready,
+  yellow while it checks or loads, and red if Ollama is down or the model
+  isn't installed.
 - **Lanes.** A row per orbit shows what it plays across the current phrase
   (4 cycles), wiping like a tracker: hits shaded by level, synth notes as
   letters, the previous pass dimmed ahead of the playhead, and the sounds
@@ -71,6 +76,7 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 | `ctrl+o` | open a `.tidal` file into the editor (doesn't play it until `ctrl+e`) |
 | `ctrl+l` | lanes on / off |
 | `ctrl+t` | your preferences for the model (also the footer's Prefs button) |
+| `ctrl+k` | pick the model from the ones Ollama has installed |
 | `ctrl+b` | boot SuperDirt |
 | `ctrl+g` | record to WAV: start / stop on the next phrase (also the footer's Rec button, which reads Stop Rec while recording) |
 | `ctrl+q` | quit (hushes, stops anything selene started) |
@@ -82,10 +88,10 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/cps 0.6`,
 `/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/fade 4 [CYCLES]`,
 `/fade all`, `/stop 4`, `/take 4`, `/prefs`, `/prefer TEXT`, `/flow`, `/split 30` (the log's share of the width; `/split`
-resets), `/save [NAME]`, `/open [NAME]`, `/record`, `/model NAME`, `/new`
+resets), `/save [NAME]`, `/open [NAME]`, `/record`, `/model [NAME]` (no name: the picker), `/new`
 are commands (`/record tail N` sets the ring-out, `/record dir PATH` the folder).
-The split, whether the lanes are showing, and where recordings go and how
-long they ring out are
+The split, whether the lanes are showing, the model you last picked, and
+where recordings go and how long they ring out are
 remembered between launches (`~/.local/share/selene/settings.json`). Every
 prompt you've typed is in `~/.local/share/selene/prompt_history.jsonl`.
 
@@ -202,7 +208,8 @@ and `SELENE_TAP_PORT` lines from the bundled `BootTidal.hs` for Flow to work.
 ## Options
 
 ```
---model NAME        Ollama model or family name (default: gemma4:31b-mlx)
+--model NAME        Ollama model or family name (default: the last one picked
+                    with ctrl+k, else gemma4:31b-mlx)
 --ollama-url URL    default http://localhost:11434
 --ghci PATH         GHCi executable (default: ghci)
 --boot FILE         BootTidal.hs to load (default: the bundled one)

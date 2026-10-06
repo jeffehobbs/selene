@@ -3,12 +3,14 @@
 from pathlib import Path
 from typing import Iterable
 
+from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, DirectoryTree, Input, Static, TextArea
+from textual.widgets import Button, DirectoryTree, Input, OptionList, Static, TextArea
+from textual.widgets.option_list import Option
 
 DEFAULT_DIR = Path.home() / "Documents/selene"
 SUFFIX = ".tidal"
@@ -34,7 +36,7 @@ class TidalTree(DirectoryTree):
 
 
 DIALOG_CSS = """
-PathScreen, ConfirmScreen, PrefsScreen { align: center middle; }
+PathScreen, ConfirmScreen, PrefsScreen, ModelScreen { align: center middle; }
 #dialog { width: 72; height: auto; max-height: 80%; padding: 1 2;
           border: round $accent; background: $surface; }
 #dialog TidalTree { height: 16; margin-top: 1; }
@@ -170,3 +172,58 @@ class PrefsScreen(ModalScreen[str | None]):
             return
         self.app.push_screen(ConfirmScreen("Discard your changes to the preferences?", "Discard"),
                              lambda yes: yes and self.dismiss(None))
+
+
+def model_row(model: dict, width: int, current: bool, in_memory: bool) -> Text:
+    """One installed model: name, size on disk, parameters and quantization."""
+    details = model.get("details") or {}
+    text = Text().append("● " if current else "  ", style="green")
+    text.append(model["name"].ljust(width), style="bold" if current else "")
+    text.append(f"  {model.get('size', 0) / 1e9:5.1f} GB", style="dim")
+    about = " ".join(filter(None, (details.get("parameter_size"),
+                                   details.get("quantization_level"))))
+    text.append(f"  {about:<12}", style="dim")
+    if in_memory:
+        text.append("  in memory", style="green")
+    return text
+
+
+class ModelScreen(ModalScreen[str | None]):
+    """Pick the Ollama model that writes the code. Enter switches; esc keeps
+    the current one."""
+
+    DEFAULT_CSS = DIALOG_CSS + """
+    ModelScreen #dialog { width: 80; }
+    ModelScreen OptionList, ModelScreen OptionList:focus {
+        height: auto; max-height: 20; border: none; padding: 0; background: $surface; }
+    """
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, models: list[dict], loaded: set[str], current: str):
+        super().__init__()
+        self.models, self.loaded, self.current = models, loaded, current
+
+    def compose(self) -> ComposeResult:
+        width = max((len(m["name"]) for m in self.models), default=0)
+        with Vertical(id="dialog") as dialog:
+            dialog.border_title = "model"
+            if not self.models:
+                yield Static("No models installed. Try `ollama pull gemma4`.")
+                return
+            yield OptionList(*(Option(model_row(m, width, m["name"] == self.current,
+                                                m["name"] in self.loaded), id=m["name"])
+                               for m in self.models), id="models")
+
+    def on_mount(self) -> None:
+        if self.models:
+            options = self.query_one("#models", OptionList)
+            names = [m["name"] for m in self.models]
+            options.highlighted = names.index(self.current) if self.current in names else 0
+            options.focus()
+
+    @on(OptionList.OptionSelected)
+    def picked(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option.id)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)

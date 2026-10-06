@@ -21,7 +21,7 @@ from textual.widget import Widget
 from textual.widgets import Footer, Input, RichLog, Static, TextArea
 
 from . import blocks, catalog, recorder, settings
-from .files import DEFAULT_DIR, ConfirmScreen, PathScreen, PrefsScreen, resolve
+from .files import DEFAULT_DIR, ConfirmScreen, ModelScreen, PathScreen, PrefsScreen, resolve
 from .flow import (DEFAULT_DEPTH, DEPTHS, PHRASE, CtrlSender, FlowDirector, TidalClock,
                    ctrl_name, free_udp_port)
 from .ghci import BUNDLED_BOOT, Ghci
@@ -39,6 +39,8 @@ FLOW_SPEED = float(os.environ.get("SELENE_FLOW_SPEED", "1"))
 # Recording starts and stops this long before a phrase boundary plays, to
 # cover the trip to sclang.
 REC_LEAD = 0.02
+DEFAULT_MODEL = "gemma4:31b-mlx"
+MODEL_CHECK_EVERY = 15.0  # seconds between checks that Ollama and the model are there
 
 
 class PromptInput(Input):
@@ -231,6 +233,7 @@ class Selene(App):
         Binding("ctrl+o", "open", "Open", priority=True),
         Binding("ctrl+l", "lanes", "Lanes", priority=True),
         Binding("ctrl+t", "prefs", "Prefs", priority=True),
+        Binding("ctrl+k", "models", "Model", priority=True),
         Binding("ctrl+b", "boot_dirt", "SuperDirt", priority=True),
         # One key, two footer labels; check_action shows the one that applies.
         Binding("ctrl+g", "record", "Rec", priority=True),
@@ -241,7 +244,9 @@ class Selene(App):
     def __init__(self, args: argparse.Namespace):
         super().__init__()
         self.args = args
-        self.ollama = Ollama(args.ollama_url, args.model)
+        # --model wins; then the model last picked in the app; then the default.
+        model = args.model or settings.load()["model"] or DEFAULT_MODEL
+        self.ollama = Ollama(args.ollama_url, model)
         self.ghci = Ghci(args.ghci, Path(args.boot), on_output=self._ghci_line)
         self.dirt = SuperDirt(on_output=self._dirt_line)
         self.recorder = Recorder()
@@ -268,7 +273,7 @@ class Selene(App):
         # cut off by esc). It can differ from what's playing without being the
         # player's edit.
         self.model_text = ""
-        self.state = {"model": args.model, "ghci": "booting", "dirt": "?", "llm": "", "flow": ""}
+        self.state = {"model": model, "ollama": "checking", "ghci": "booting", "dirt": "?", "llm": "", "flow": ""}
         self.announced_ready = False
         # Flow: off at launch. `flow` lives on through the glide home after
         # Flow is turned off; `flow_on` is whether new code gets the wrappers.
@@ -318,6 +323,7 @@ class Selene(App):
         self._render_bar()
         self.start_services()
         self.set_interval(1.0, self._discover)
+        self.set_interval(MODEL_CHECK_EVERY, self._poll_model)
         self.set_interval(1.0, lambda: self.rec and self._render_bar())  # rec timer
 
     # ── status ────────────────────────────────────────────────────────────
@@ -334,7 +340,10 @@ class Selene(App):
         label = {"sclang": "not started", "?": "checking"}.get(s["dirt"], s["dirt"])
         bar.append("● ", style=dirt).append(f"superdirt {label}")
         bar.append("   ")
-        bar.append(s["model"], style="dim")
+        light = {"ready": "green", "missing": "red", "down": "red"}.get(s["ollama"], "yellow")
+        label = {"ready": "", "down": " unreachable", "missing": " not installed"}.get(
+            s["ollama"], f" {s['ollama']}")
+        bar.append("● ", style=light).append(s["model"]).append(label)
         if s["llm"]:
             bar.append(f"  {s['llm']}", style="italic yellow")
         if s["flow"]:
@@ -518,12 +527,7 @@ class Selene(App):
         elif self.state["dirt"] == "sclang":
             self.log_line("sclang is running but SuperDirt isn't answering; "
                           "run SuperDirt.start in SuperCollider", "yellow")
-        try:
-            model = await self.ollama.resolve_model()
-            self._set(model=model)
-        except Exception as e:  # noqa: BLE001 - surface any Ollama failure
-            self.log_line(f"ollama: {e}", "red")
-            self._set(model=f"{self.args.model} (unavailable)")
+        await self._check_model()
         try:
             await self._listen_tap()
             result = await self.ghci.start(ctrl_port=free_udp_port(), tap_port=self.tap_port)
@@ -561,10 +565,8 @@ class Selene(App):
             self.evaluate(f"setcps ({arg})", source="raw")
         elif name == "bpm" and arg:
             self.evaluate(f"setcps ({arg}/60/4)", source="raw")
-        elif name == "model" and arg:
-            self.ollama.model = self.ollama.requested = arg.strip()
-            self._set(model=arg.strip())
-            self.run_worker(self._resolve_model(), group="services")
+        elif name == "model":
+            self.switch_model(arg.strip()) if arg.strip() else self.action_models()
         elif name in ("mute", "unmute", "solo"):
             self.orbit_command(name, arg)
         elif name in ("fade", "stop", "take"):
@@ -592,7 +594,7 @@ class Selene(App):
         else:
             self.log_line("commands: /hush /cps N /bpm N /mute N /unmute [N] /solo N "
                           "/prefs /prefer TEXT /fade N|held|all [CYCLES] /stop N|held|all /take N /flow [1-5] /split [N] /save [NAME] /open [NAME] "
-                          "/record [stop|dir PATH] /model NAME /new", "yellow")
+                          "/record [stop|dir PATH] /model [NAME] /new", "yellow")
 
     def orbit_command(self, name: str, arg: str) -> None:
         orbits = self._all_orbits()
@@ -786,11 +788,72 @@ class Selene(App):
         if changed:
             self._render_bar()
 
-    async def _resolve_model(self) -> None:
+    # ── model ─────────────────────────────────────────────────────────────
+
+    async def _check_model(self) -> bool:
+        """Light the model's dot: is Ollama up, and is the model installed?
+        A problem is logged once, when the light changes, not every check."""
         try:
-            self._set(model=await self.ollama.resolve_model())
+            model = await self.ollama.resolve_model()
+        except LookupError as e:
+            status, message = "missing", str(e)
+        except Exception:  # noqa: BLE001 - connection refused, timeouts, HTTP errors
+            status, message = "down", f"can't reach Ollama at {self.args.ollama_url}"
+        else:
+            if self.state["ollama"] in ("down", "missing"):
+                self.log_line(f"ollama: {model} is back", "green")
+            if self.state["ollama"] != "loading":  # a warm-up says when it's ready
+                self._set(model=model, ollama="ready")
+            return True
+        if self.state["ollama"] != status:
+            self.log_line(f"ollama: {message}", "red")
+        self._set(ollama=status)
+        return False
+
+    def _poll_model(self) -> None:
+        self.run_worker(self._check_model(), group="model-check", exclusive=True)
+
+    @work(group="models", exclusive=True)
+    async def action_models(self) -> None:
+        if self._modal():
+            return
+        try:
+            models, loaded = await self.ollama.installed(), await self.ollama.loaded()
+        except Exception:  # noqa: BLE001
+            self.log_line(f"ollama: can't reach Ollama at {self.args.ollama_url}", "red")
+            self._set(ollama="down")
+            return
+        if self._modal():  # something else opened while we asked Ollama
+            return
+        self.push_screen(ModelScreen(models, loaded, self.ollama.model),
+                         lambda name: name and self.switch_model(name))
+
+    def switch_model(self, name: str) -> None:
+        """Use another model from the next prompt on, and load it now so the
+        light shows when it's ready. The choice is remembered across launches."""
+        if name == self.ollama.model and self.state["ollama"] in ("ready", "loading"):
+            return
+        self.ollama.model = self.ollama.requested = name
+        self._set(model=name, ollama="checking")
+        self._load_model()
+
+    @work(group="model-load", exclusive=True)
+    async def _load_model(self) -> None:
+        if not await self._check_model():
+            return
+        settings.save(model=self.ollama.model)
+        self._set(ollama="loading")
+        started = time.monotonic()
+        try:
+            await self.ollama.warm()
         except Exception as e:  # noqa: BLE001
-            self.log_line(f"ollama: {e}", "red")
+            self.log_line(f"ollama: couldn't load {self.ollama.model}: {e}", "red")
+            self._set(ollama="checking")
+            await self._check_model()
+            return
+        self._set(ollama="ready")
+        self.log_line(f"model: {self.ollama.model} "
+                      f"(loaded in {time.monotonic() - started:.1f} s)", "green")
 
     def action_play_editor(self) -> None:
         self.evaluate(self.query_one("#code", TextArea).text, source="editor")
@@ -1568,7 +1631,8 @@ def merge_layers(playing: str, raw: str) -> str:
 
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--model", default="gemma4:31b-mlx", help="Ollama model or family (default: gemma4:31b-mlx)")
+    p.add_argument("--model", help=f"Ollama model or family (default: the last one picked "
+                                    f"with ctrl+k, else {DEFAULT_MODEL})")
     p.add_argument("--ollama-url", default="http://localhost:11434")
     p.add_argument("--ghci", default="ghci", help="GHCi executable")
     p.add_argument("--boot", default=str(BUNDLED_BOOT), help="BootTidal.hs to load")
