@@ -121,13 +121,14 @@ def flowify(code: str) -> str:
 
 def as_xfade(stmt: str, cycles: int = 16) -> str:
     """`dN $ X` -> a crossfade into X over `cycles` cycles. xfadeIn skips dN's
-    own orbit routing, so add it back (d1..d12 map to orbits 0..11)."""
+    own orbit routing, so add it back (d1..d12 map to orbits 0..11), and the
+    `_id_` tag Tidal only adds in `dN`, which the lanes sort events by."""
     m = ORBIT_STMT.match(stmt)
     if not m:
         return stmt
     n, body = m.groups()
     route = f" |< orbit {int(n) - 1}" if int(n) <= 12 else ""
-    return f"xfadeIn {n} {cycles} $ ({body}\n  ){route}"
+    return f"xfadeIn {n} {cycles} $ ({body}\n  ){route} # pS \"_id_\" (pure \"{n}\")"
 
 
 SCALE = re.compile(r'\bscale\s+"([^"]+)"')

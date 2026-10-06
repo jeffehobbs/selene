@@ -51,6 +51,10 @@ class LaneModel:
 
     def add(self, timetag: float, ev: dict) -> None:
         pid, cycle = str(ev.get("_id_", "")), ev.get("cycle")
+        if not pid and ev.get("orbit") is not None:
+            # Tidal's transitions (xfadeIn) drop `_id_`, e.g. the outgoing side
+            # of a Flow evolution or a /fade. dN routes to orbit N-1.
+            pid = str(int(float(ev["orbit"])) + 1)
         if not pid.isdigit() or cycle is None:
             return
         cycle = float(cycle) + 1e-6

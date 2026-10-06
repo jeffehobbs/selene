@@ -75,7 +75,8 @@ def test_flowify_wraps_orbits_only():
 
 def test_as_xfade_and_statement_for():
     from selene.blocks import as_xfade, statement_for
-    assert as_xfade('d3 $ s "cp*2"', 8) == 'xfadeIn 3 8 $ (s "cp*2"\n  ) |< orbit 2'
+    assert as_xfade('d3 $ s "cp*2"', 8) == ('xfadeIn 3 8 $ (s "cp*2"\n  ) |< orbit 2'
+                                        ' # pS "_id_" (pure "3")')
     reply = 'setcps 1\nd1 $ s "bd"\nd3 $ n "0 2"\n  # s "superpiano"'
     assert statement_for(reply, "d3") == 'd3 $ n "0 2"\n  # s "superpiano"'
     assert statement_for(reply, "d2") is None

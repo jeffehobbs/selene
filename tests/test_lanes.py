@@ -137,3 +137,12 @@ async def test_rows_line_up_past_d9(fake_dirt):
         assert len({c.outer_size.width for c in lanes.chips}) == 1
         assert [str(c.render()).rstrip() for c in lanes.chips] == [" d1", " d9", " d10", " d12"]
         await app.action_quit()
+
+
+def test_events_without_an_id_fall_back_to_their_orbit():
+    """xfadeIn (Flow evolutions, /fade) plays patterns Tidal never tagged with _id_."""
+    m = LaneModel()
+    m.add(0, {"cycle": 0.0, "s": "bd", "orbit": 2})
+    m.add(0, {"cycle": 0.5, "s": "bd"})  # no id, no orbit: nowhere to put it
+    m.advance(1)
+    assert set(m.hits) == {"d3"} and len(m.hits["d3"]) == 1
