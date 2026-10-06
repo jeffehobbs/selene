@@ -592,12 +592,14 @@ class Selene(App):
             self.action_open(arg.strip())
         elif name == "new":
             self.action_new_session()
+        elif name == "clear":
+            self.query_one("#log", RichLog).clear()
         elif name == "record":
             self.record_command(arg.strip())
         else:
             self.log_line("commands: /hush /cps N /bpm N /mute N /unmute [N] /solo N "
                           "/prefs /prefer TEXT /fade N|held|all [CYCLES] /stop N|held|all /take N /flow [1-5] /split [N] /save [NAME] /open [NAME] "
-                          "/record [stop|dir PATH] /model [NAME] /new", "yellow")
+                          "/record [stop|dir PATH] /model [NAME] /clear /new", "yellow")
 
     def orbit_command(self, name: str, arg: str) -> None:
         orbits = self._all_orbits()

@@ -140,3 +140,13 @@ async def test_switching_to_a_missing_model_goes_red_and_isnt_remembered():
         assert "not installed" in str(app.query_one("#status").render())
         assert fake.warmed == [] and settings.load()["model"] == ""
 
+
+async def test_clear_empties_the_ghci_log():
+    app = app_with(FakeOllama())
+    async with app.run_test(size=(120, 34)):
+        app.log_line("some noise")
+        assert "some noise" in log_text(app)
+        app.command("clear")
+        assert app.query_one("#log").lines == []
+        app.log_line("after")
+        assert log_text(app) == "after"

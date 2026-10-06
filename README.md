@@ -88,7 +88,7 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/cps 0.6`,
 `/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/fade 4 [CYCLES]`,
 `/fade all`, `/stop 4`, `/take 4`, `/prefs`, `/prefer TEXT`, `/flow`, `/split 30` (the log's share of the width; `/split`
-resets), `/save [NAME]`, `/open [NAME]`, `/record`, `/model [NAME]` (no name: the picker), `/new`
+resets), `/save [NAME]`, `/open [NAME]`, `/record`, `/model [NAME]` (no name: the picker), `/clear` (empties the ghci log), `/new`
 are commands (`/record tail N` sets the ring-out, `/record dir PATH` the folder).
 The split, whether the lanes are showing, the model you last picked, and
 where recordings go and how long they ring out are
