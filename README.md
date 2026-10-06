@@ -178,6 +178,10 @@ how active it is (and starts it):
 | 4 | + **arrangement events** on the beat: drops (all but one layer fall out for a phrase, then slam back), fills, rolls, dub delay throws; the model's rewrites get bolder |
 | 5 | everything faster, wider, more often |
 
+- **Flow warms up.** It starts at depth 1 and climbs a level every 30 s to
+  the depth you chose, so the music opens up rather than lurching. When a
+  level brings new gestures, the layers pick them up one at a time, drums
+  last. Picking a depth with `/flow N` while Flow is on skips the warm-up.
 - **Continuous changes are always ramped** (smootherstep, no edge at either
   end), each layer on its own prime-numbered clock so nothing lines up.
 - **Stepped changes land exactly on the beat.** Tidal copies every event to
@@ -188,7 +192,9 @@ how active it is (and starts it):
   layers are exempt** (anything playing a drum kit, break or drum synth):
   losing random hits makes a beat sound broken, so Flow never thins them.
   They still drift in level, tone and space, and still join whole-phrase
-  drops.
+  drops. Their rhythm mutations are only rolls and double-time fills in the
+  last cycle of a phrase, landing on the downbeat; a beat never rotates,
+  reverses or goes half-time.
 - **The model evolves one layer** every 1–11 minutes depending on depth,
   crossfaded in with `xfadeIn`; it may add a layer that swells in from
   silence, or fade one out.

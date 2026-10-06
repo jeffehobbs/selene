@@ -1369,8 +1369,9 @@ class Selene(App):
             return
         self.flow_on = True
         if self.flow:  # still gliding home from a moment ago
-            self.flow.resume(self._flow_now())
+            # set_depth ends a warm-up, so it goes first; resume starts a new one.
             self.flow.set_depth(self.flow_depth, self._flow_now(), self._cycle())
+            self.flow.resume(self._flow_now())
         else:
             self.flow = FlowDirector(depth=self.flow_depth)
             self.flow_ctrl = CtrlSender(self.ghci.ctrl_port)
@@ -1378,7 +1379,9 @@ class Selene(App):
             self.flow_timer = self.set_interval(0.1, self._flow_tick)
         self._flow_rebase(player=False)
         self._set(flow="flow")
-        self.log_line(f"☯ flow on · depth {self.flow_depth}", "magenta")
+        warm = round(self.flow.warm_until - self._flow_now())
+        self.log_line(f"☯ flow on · depth {self.flow_depth}"
+                      + (f" · opening up over {warm}s" if warm > 0 else ""), "magenta")
         if not self._boot_supports_flow():
             self.log_line("flow needs the SELENE_CTRL_PORT and SELENE_TAP_PORT lines from the "
                           "bundled BootTidal.hs in your --boot file", "yellow")

@@ -304,3 +304,88 @@ def test_flow_explains_itself():
     assert drift and {e.detail for e in drift} <= {
         "louder", "quieter", "brighter", "darker", "wetter", "drier", "grittier",
         "cleaner", "crunchier", "smoother", "more echo", "less echo"}
+
+
+# ── the entrance ──────────────────────────────────────────────────────────
+
+def drum_steps(steps):
+    return [(t, s) for t, s in steps if s.name[-1] in "45"]
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_flow_warms_up_to_its_depth(seed):
+    from selene.flow import WARM_STEP
+    d = FlowDirector(seed=seed, depth=5)
+    d.rebase({**CODE, **DRUMS}, now=0, player=False)
+    steps = []
+    snaps, events = run(d, 600, steps=steps, on_event=ack_evolves(d))
+    # Nothing stepped and no color until level 3; no arrangement events until 4.
+    assert steps and min(t for t, _ in steps) >= 2 * WARM_STEP
+    for i, s in enumerate(snaps):
+        if i * TICK < 2 * WARM_STEP:
+            assert all(s[(o, c)] == CONTINUOUS[c][0] for o in d.orbits
+                       for c in ("drive", "crush", "send"))
+    arrangement = [t for t, e in events if e.kind == "log" and not e.orbit
+                   and e.gesture in ("drop", "fill", "roll", "throw")]
+    assert arrangement and min(arrangement) >= 3 * WARM_STEP
+    assert not [e for _, e in events if e.kind == "evolve" and _ < 4 * WARM_STEP]
+    assert d.level == 5
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
+def test_woken_gestures_are_staggered_drums_last(seed):
+    """When warm-up reaches rhythm, the layers don't all mutate on the same
+    boundary, and the drums are the last to move."""
+    d = FlowDirector(seed=seed, depth=3)
+    d.rebase({**CODE, **DRUMS}, now=0, player=False)
+    steps = []
+    run(d, 180, steps=steps, on_event=ack_evolves(d))
+    first = {}
+    for t, s in steps:
+        first.setdefault(s.name[-1], s.cycle)
+    assert len(set(first.values())) > 1, first
+    melodic = [c for o, c in first.items() if o in "123"]
+    drums = [c for o, c in first.items() if o in "45"]
+    if melodic and drums:
+        assert min(drums) >= min(melodic)
+
+
+@pytest.mark.parametrize("seed,depth", [(s, d) for s in (1, 2, 3) for d in (3, 4, 5)])
+def test_drums_only_roll_or_fill_into_a_boundary(seed, depth):
+    d = FlowDirector(seed=seed, depth=depth)
+    d.rebase({**CODE, **DRUMS}, now=0, player=False)
+    steps = []
+    run(d, 3600, steps=steps, on_event=ack_evolves(d))
+    ds = drum_steps(steps)
+    assert ds
+    names = {s.name[3:-1] for _, s in ds}
+    assert not names & {"rot", "rev"}, names
+    for _, s in ds:
+        c = s.name[3:-1]
+        if c in ("rate", "ply") and s.value != STEPPED[c]:
+            assert s.cycle % PHRASE == PHRASE - 1, s  # one cycle, into the boundary
+            home = [h for _, h in ds if h.name == s.name and h.cycle == s.cycle + 1]
+            assert home and home[0].value == STEPPED[c]
+            assert s.value == 2.0 or c == "ply"  # never half-time
+    # The melodic layers still get the full set.
+    melodic = {s.name[3:-1] for t, s in steps if s.name[-1] in "123"}
+    assert {"rot", "rev"} & melodic
+
+
+def test_resume_warms_up_again_and_a_depth_change_ends_it():
+    from selene.flow import WARM_STEP
+    d = FlowDirector(seed=5, depth=4)
+    d.rebase(CODE, now=0, player=False)
+    run(d, 300, on_event=ack_evolves(d))
+    assert d.level == 4
+    d.start_exit(now=300, cycle=150.0)
+    run(d, 5, start=300)
+    d.set_depth(4, now=305, cycle=152.5)
+    d.resume(now=305)
+    assert d.level == 1
+    run(d, WARM_STEP * 3 + 1, start=305, on_event=ack_evolves(d))
+    assert d.level == 4
+    d.resume(now=500)
+    assert d.level == 1
+    d.set_depth(5, now=500, cycle=250.0)
+    assert d.level == 5

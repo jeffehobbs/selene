@@ -21,6 +21,13 @@ just before Tidal processes the frame holding that boundary.
 The key and the tempo never move. Muted orbits are left alone. The player
 always wins: anything they play rebases Flow and holds off structural changes.
 
+Flow warms up. When it comes on it starts at depth 1 and climbs a level every
+WARM_STEP seconds to the chosen depth, so the music opens up instead of
+lurching. Gestures a new level wakes are staggered across the layers, drums
+last. Drum layers never shift, flip or change speed for a phrase (a beat
+doing that sounds broken, not varied); they only roll or fill into a phrase
+boundary and land on it.
+
 The director is pure: `tick(now, cycle)` returns control updates, scheduled
 steps and events; the app does the I/O. That's what lets tests run an hour of
 Flow in a second.
@@ -59,6 +66,8 @@ QUANTUM = 0.004  # send a continuous control only when it moved 0.4% of its band
 FLOOR_RAMP = 3.0  # no continuous ramp is ever shorter, at any depth
 EXIT_SECONDS = 12.0  # Flow off: continuous controls glide home over this long
 PHRASE = 4  # cycles; rhythm mutations and events land on multiples of this
+WARM_STEP = 30.0  # seconds per depth level while Flow warms up
+STAGGER = 8.0  # seconds between layers when a level wakes new gestures
 
 PRIMES = (11, 13, 17, 19, 23, 29, 31, 37, 41, 43)
 BUDGET_PERIODS = {"transfer": 37, "dropout": 53, "tilt": 61, "spotlight": 71}
@@ -190,7 +199,9 @@ class FlowDirector:
         self.budget_due = {g: self._jitter(p) for g, p in BUDGET_PERIODS.items()}
         self.event_due = {g: self._jitter(p) for g, p in EVENT_PERIODS.items()}
         self.settled_for: frozenset = frozenset()
-        self.evolve_due = self._evolve_gap()
+        self.warm_from: float | None = 0.0  # Flow came on at t=0
+        self.level_was = 1
+        self.evolve_due = max(self._evolve_gap(), self.warm_until)
         self.evolve_pending = False
         self.last_evolved: dict[str, float] = {}
         self.drift_events: list[Event] = []
@@ -198,7 +209,20 @@ class FlowDirector:
 
     @property
     def depth(self) -> Depth:
-        return DEPTHS[self.depth_level]
+        return DEPTHS[self.level]
+
+    @property
+    def level(self) -> int:
+        """The depth in effect: the chosen one, once warm-up is over."""
+        if self.warm_from is None:
+            return self.depth_level
+        return min(self.depth_level, 1 + int(max(0.0, self.now - self.warm_from) // WARM_STEP))
+
+    @property
+    def warm_until(self) -> float:
+        if self.warm_from is None:
+            return self.now
+        return self.warm_from + WARM_STEP * (self.depth_level - 1)
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
@@ -239,8 +263,11 @@ class FlowDirector:
 
     def set_depth(self, level: int, now: float, cycle: float | None) -> list[Step]:
         """Change depth live. Anything the new depth doesn't allow goes home:
-        color glides back, stepped controls return at the next boundary."""
+        color glides back, stepped controls return at the next boundary.
+        The player asked for this depth, so it ends any warm-up."""
         self.depth_level = level
+        self.warm_from = None
+        self.level_was = level
         self.settled_for = frozenset()  # the budget's average depends on depth
         self.evolve_due = min(self.evolve_due, now + self._evolve_gap())
         for g in self.event_due:
@@ -270,9 +297,12 @@ class FlowDirector:
 
     def resume(self, now: float) -> None:
         """Flow back on mid-exit: keep the glide home and drift on from there,
-        rather than a fresh director whose idea of the controls is wrong."""
+        rather than a fresh director whose idea of the controls is wrong.
+        It warms up again, as if it were coming on for the first time."""
         self.exiting_until = None
-        self.evolve_due = max(self.evolve_due, now + self.depth.yield_seconds)
+        self.now = now
+        self.warm_from = now
+        self.evolve_due = max(self.evolve_due, now + self.depth.yield_seconds, self.warm_until)
 
     @property
     def exited(self) -> bool:
@@ -290,6 +320,8 @@ class FlowDirector:
         events: list[Event] = []
         steps: list[Step] = []
         if self.exiting_until is None:
+            if self.level != self.level_was:
+                self._wake(now)
             self.drift_events = []
             self._drift(now)
             events += self.drift_events
@@ -310,6 +342,21 @@ class FlowDirector:
                 o.retiring = False  # report once; the app silences and rebases
                 events.append(Event("silence", orbit))
         return updates, steps, events
+
+    def _wake(self, now: float) -> None:
+        """Warm-up reached a new level. Its new gestures were due long ago,
+        so they'd all fire on the next boundary: stagger them instead, one
+        layer every STAGGER seconds, drums last."""
+        if self.level > self.level_was:
+            layers = sorted(self.orbits, key=lambda o: (self.orbits[o].drums, self.rng.random()))
+            for i, orbit in enumerate(layers):
+                o = self.orbits[orbit]
+                for c in COLOR + ("mutate",):
+                    o.due[c] = max(o.due.get(c, now), now + self._jitter(STAGGER * (i + 1)))
+            for g in self.event_due:
+                self.event_due[g] = max(self.event_due[g],
+                                        now + self._jitter(EVENT_PERIODS[g] * self.depth.gap))
+        self.level_was = self.level
 
     def _advance(self, now: float) -> list[tuple[str, float]]:
         updates = []
@@ -504,10 +551,13 @@ class FlowDirector:
                     or cycle < max(o.busy_until_cycle, o.rest_until_cycle):
                 continue
             o.due["mutate"] = now + self._jitter(self.rng.choice(PRIMES[2:]) * self.depth.gap * 2)
+            if o.drums:
+                steps += self._drum_mutation(orbit, cycle)
+                continue
             at = self._next_phrase(cycle)
             back = at + PHRASE * self.rng.choice((1, 1, 2))
             # Then let the layer be heard as written for a while.
-            rest = PHRASE * self.rng.choice((1, 2, 3)) * (2 if self.depth_level == 3 else 1)
+            rest = PHRASE * self.rng.choice((1, 2, 3)) * (2 if self.level == 3 else 1)
             o.rest_until_cycle = back + rest
             kind = self.rng.choice(("rot", "ply", "rate", "rev"))
             if kind == "rot":
@@ -528,6 +578,21 @@ class FlowDirector:
                 Event("log", orbit, f"{orbit} {what}, cycles {at}–{back}", gesture=kind))
         return steps
 
+    def _drum_mutation(self, orbit: str, cycle: float) -> list[Step]:
+        """A drum layer's mutation: a one-cycle roll or fill that lands on the
+        next phrase boundary. The groove itself never moves."""
+        o = self.orbits[orbit]
+        at = self._next_phrase(cycle + 1)  # leaves room for the cycle before it
+        o.rest_until_cycle = at + PHRASE * self.rng.choice((2, 3, 4)) * (2 if self.level == 3 else 1)
+        if self.rng.random() < 0.5:
+            steps = self._step(orbit, "ply", 2.0, at - 1, at)
+            what, gesture = f"rolls (every hit ×2) into cycle {at}", "roll"
+        else:
+            steps = self._step(orbit, "rate", 2.0, at - 1, at)
+            what, gesture = f"fills at double time into cycle {at}", "fill"
+        self.mutation_events.append(Event("log", orbit, f"{orbit} {what}", gesture=gesture))
+        return steps
+
     def _event(self, now: float, cycle: float) -> tuple[list[Step], list[Event]]:
         """Arrangement events (depth 4+), one at a time, on phrase boundaries."""
         free = [o for o in self.orbits if self._free(o)]
@@ -541,7 +606,7 @@ class FlowDirector:
             if steps:
                 self.event_due[kind] = now + self._jitter(EVENT_PERIODS[kind] * self.depth.gap * 2)
                 # Room to breathe before the next one: more of it at depth 4.
-                rest = self.rng.choice((2, 3, 4) if self.depth_level == 4 else (1, 1, 2))
+                rest = self.rng.choice((2, 3, 4) if self.level == 4 else (1, 1, 2))
                 self.events_busy_cycle = max(s.cycle for s in steps) + PHRASE * rest
                 return steps, [Event("log", detail=say, gesture=kind)]
             self.event_due[kind] = now + self._jitter(5)  # nothing free: try again soon
@@ -641,7 +706,8 @@ class FlowDirector:
         return seconds * self.rng.uniform(0.8, 1.25)
 
     def _evolve_gap(self) -> float:
-        return self._jitter(self.rng.choice(self.depth.evolve_minutes) * 60)
+        # The chosen depth's pace, not the warm-up's.
+        return self._jitter(self.rng.choice(DEPTHS[self.depth_level].evolve_minutes) * 60)
 
 
 def is_drums(stmt: str) -> bool:
