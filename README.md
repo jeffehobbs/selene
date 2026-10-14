@@ -106,12 +106,18 @@ keyboard) can't be typed in selene.
 In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/cps 0.6`,
 `/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/fade 4 [CYCLES]`,
 `/fade all`, `/stop 4`, `/take 4`, `/prefs`, `/prefer TEXT`, `/flow`, `/split 30` (the log's share of the width; `/split`
-resets), `/save [NAME]`, `/open [NAME]`, `/record`, `/model [NAME]` (no name: the picker), `/clear` (empties the ghci log), `/new`
+resets), `/save [NAME]`, `/open [NAME]`, `/record`, `/model [NAME]` (no name: the picker), `/clear` (empties the ghci log), `/quiet` (see below), `/new`
 are commands (`/record tail N` sets the ring-out, `/record dir PATH` the folder).
-The split, whether the lanes are showing, the model you last picked, and
+The split, whether the lanes are showing, the quiet log, the model you last picked, and
 where recordings go and how long they ring out are
 remembered between launches (`~/.local/share/selene/settings.json`). Every
 prompt you've typed is in `~/.local/share/selene/prompt_history.jsonl`.
+
+**Quiet log.** Like Pulsar's "only show log on errors", the log hides
+GHCi's and SuperCollider's routine output (the boot banner, `Listening for…`,
+the `sc` lines). Green lines (`Connected to SuperDirt`), errors and selene's
+own messages still show. `/quiet` turns it off and back on, redrawing the
+log with or without the hidden lines, and selene remembers the choice.
 
 **Held layers.** Like Tidal itself, playing new code doesn't stop layers it
 doesn't mention: open a file with `d1`–`d3` over one with `d1`–`d6` and

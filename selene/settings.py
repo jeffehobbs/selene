@@ -11,7 +11,9 @@ DEFAULT_PATH = Path.home() / ".local/share/selene/settings.json"
 # out (it ends sooner once the output goes silent).
 # model "" means: the default (DEFAULT_MODEL in app.py); the picker remembers
 # the player's last choice here.
-DEFAULTS = {"split": 50.0, "lanes": True, "record_dir": "", "record_tail": 8.0, "model": ""}
+# quiet: the log hides GHCi's and SuperCollider's routine output.
+DEFAULTS = {"split": 50.0, "lanes": True, "record_dir": "", "record_tail": 8.0, "model": "",
+            "quiet": True}
 
 
 def path() -> Path:

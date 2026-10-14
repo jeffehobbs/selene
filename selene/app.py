@@ -4,7 +4,9 @@ import argparse
 import asyncio
 import math
 import os
+import re
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -46,6 +48,11 @@ FLOW_SPEED = float(os.environ.get("SELENE_FLOW_SPEED", "1"))
 REC_LEAD = 0.02
 DEFAULT_MODEL = "gemma4:31b-mlx"
 MODEL_CHECK_EVERY = 15.0  # seconds between checks that Ollama and the model are there
+LOG_LINES = 2000
+# SuperCollider lines the quiet log still shows: its errors, and selene's own
+# notes about it (superdirt.py), which read like these.
+DIRT_NOTABLE = re.compile(r"ERROR|FAILURE|exception|not found|not listening|doesn't match",
+                          re.I)
 
 
 # What option+1 … option+9, option+0 type on a US Mac keyboard (and what
@@ -383,6 +390,10 @@ class Selene(App):
         remembered = settings.load()
         self.lanes_on = bool(remembered["lanes"])
         self.split = float(remembered["split"])  # the log's share of the width, %
+        # Quiet log: GHCi's and SuperCollider's routine output is kept but not
+        # shown; green and red lines still are. /quiet redraws with or without it.
+        self.quiet = bool(remembered["quiet"])
+        self.log_entries: deque[tuple[Text, bool]] = deque(maxlen=LOG_LINES)  # (line, chatter)
         self.tap_port = free_udp_port()
         # Pulsar-style event highlighting, if the boot file sends positions.
         self.marks = Highlighter()
@@ -400,7 +411,7 @@ class Selene(App):
             yield Horizontal(id="orbits")
         yield Lanes(self.lane_model, self.clock, OrbitChip, id="lanes")
         with Horizontal(id="main"):
-            yield RichLog(id="log", wrap=True, markup=True, max_lines=2000)
+            yield RichLog(id="log", wrap=True, markup=True, max_lines=LOG_LINES)
             yield Divider(id="divider")
             yield PatternEditor("", id="code", show_line_numbers=True, tab_behavior="indent",
                                 soft_wrap=False)
@@ -580,22 +591,43 @@ class Selene(App):
         if ready or self.state["dirt"] != "listening":
             self.announced_ready = ready
 
-    def log_line(self, text: str, style: str = "") -> None:
+    def log_line(self, text: str, style: str = "", chatter: bool = False) -> None:
+        """Add a line to the log. `chatter` is GHCi's or SuperCollider's
+        routine output, which the quiet log keeps but doesn't show."""
+        line = Text(text, style=style) if style else Text(text)
+        self.log_entries.append((line, chatter))
+        if chatter and self.quiet:
+            return
         try:
             log = self.query_one("#log", RichLog)
         except NoMatches:  # shutting down: GHCi's goodbye has nowhere to go
             return
-        log.write(Text(text, style=style) if style else Text(text))
+        log.write(line)
+
+    def set_quiet(self, quiet: bool) -> None:
+        self.quiet = quiet
+        settings.save(quiet=quiet)
+        log = self.query_one("#log", RichLog)
+        log.clear()
+        for line, chatter in self.log_entries:
+            if not (chatter and quiet):
+                log.write(line)
+        self.log_line("quiet log: GHCi's routine output hidden (/quiet shows it)" if quiet
+                      else "full log (/quiet hides GHCi's routine output)", "dim")
 
     def _ghci_line(self, line: str) -> None:
         style = "red" if ("error" in line or "Exception" in line) else "dim"
         if "Connected to SuperDirt" in line:
             style = "green"
             self._set(dirt="listening")
-        self.log_line(line, style)
+        elif line == "GHCi exited":
+            style = "red"
+        self.log_line(line, style, chatter=style == "dim")
 
     def _dirt_line(self, line: str) -> None:
-        self.log_line(f"sc  {line}", "blue dim")
+        # SuperCollider's own errors, and selene's notes about it, always show.
+        notable = DIRT_NOTABLE.search(line)
+        self.log_line(f"sc  {line}", "yellow" if notable else "blue dim", chatter=not notable)
         if "SuperDirt: listening" in line:
             self._set(dirt="listening")
 
@@ -688,12 +720,15 @@ class Selene(App):
             self.action_new_session()
         elif name == "clear":
             self.query_one("#log", RichLog).clear()
+            self.log_entries.clear()
+        elif name == "quiet":
+            self.set_quiet(not self.quiet)
         elif name == "record":
             self.record_command(arg.strip())
         else:
             self.log_line("commands: /hush /cps N /bpm N /mute N /unmute [N] /solo N "
                           "/prefs /prefer TEXT /fade N|held|all [CYCLES] /stop N|held|all /take N /flow [1-5] /split [N] /save [NAME] /open [NAME] "
-                          "/record [stop|dir PATH] /model [NAME] /clear /new", "yellow")
+                          "/record [stop|dir PATH] /model [NAME] /clear /quiet /new", "yellow")
 
     def orbit_command(self, name: str, arg: str) -> None:
         orbits = self._all_orbits()
