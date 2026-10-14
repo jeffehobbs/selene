@@ -56,3 +56,7 @@ async def test_normal_boot_sends_nothing(monkeypatch):
     proc, _ = await run(["SC_AudioDriver: sample rate = 48000.000000",
                          "SuperDirt: listening on port 57120"], monkeypatch)
     assert proc.stdin.sent == []
+
+
+def test_bundled_startup_opens_no_inputs():
+    assert "s.options.numInputBusChannels = 0;" in sd.BUNDLED_STARTUP.read_text()
