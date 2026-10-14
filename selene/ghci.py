@@ -41,6 +41,7 @@ class Ghci:
         self._seq = 0
         self._pending: dict[str, asyncio.Future] = {}
         self._capture: list[str] | None = None
+        self._quiet = False  # capture without echoing (see eval's `plain`)
         self._reader: asyncio.Task | None = None
 
     @property
@@ -68,10 +69,27 @@ class Ghci:
                                 "System.IO.hSetBuffering System.IO.stdout System.IO.LineBuffering"],
                                timeout)
 
-    async def eval(self, code: str, timeout: float = 30) -> EvalResult:
-        """Evaluate each top-level statement in order; stop at the first error."""
+    async def eval(self, code: str, timeout: float = 30, plain: str | None = None) -> EvalResult:
+        """Evaluate each top-level statement in order; stop at the first error.
+
+        With `plain`, `code` is the same code with extras (event highlighting)
+        that might not compile: each statement is tried quietly first, and on
+        an error its plain version runs instead, so the extras never cost a
+        working statement and their errors never reach the log."""
+        statements = split_statements(code)
+        fallbacks = split_statements(plain) if plain is not None else None
+        if fallbacks is not None and len(fallbacks) != len(statements):
+            statements, fallbacks = fallbacks, None
         output: list[str] = []
-        for stmt in split_statements(code):
+        for i, stmt in enumerate(statements):
+            if fallbacks and stmt != fallbacks[i]:
+                result = await self._run([wrap(stmt).rstrip("\n")], timeout, quiet=True)
+                if result.ok:
+                    for line in result.output:
+                        self.on_output(line)
+                    output += result.output
+                    continue
+                stmt = fallbacks[i]
             result = await self._run([wrap(stmt).rstrip("\n")], timeout)
             output += result.output
             if not result.ok:
@@ -87,7 +105,7 @@ class Ghci:
         """Mute/unmute dN; Tidal keeps the flag when dN is re-evaluated."""
         return await self._run([f"{'mute' if muted else 'unmute'} {int(orbit[1:])}"], 10)
 
-    async def _run(self, lines: list[str], timeout: float) -> EvalResult:
+    async def _run(self, lines: list[str], timeout: float, quiet: bool = False) -> EvalResult:
         if not self.running:
             return EvalResult(False, ["GHCi is not running"])
         async with self._lock:
@@ -96,6 +114,7 @@ class Ghci:
             done = asyncio.get_running_loop().create_future()
             self._pending[token] = done
             self._capture = []
+            self._quiet = quiet
             payload = "\n".join(lines) + f'\nPrelude.putStrLn "{token}"\n'
             self.proc.stdin.write(payload.encode())
             await self.proc.stdin.drain()
@@ -103,10 +122,10 @@ class Ghci:
                 await asyncio.wait_for(done, timeout)
             except asyncio.TimeoutError:
                 self._capture.append(f"(no response from GHCi after {timeout:.0f}s)")
-                captured, self._capture = self._capture, None
+                captured, self._capture, self._quiet = self._capture, None, False
                 self._pending.pop(token, None)
                 return EvalResult(False, captured)
-            captured, self._capture = self._capture, None
+            captured, self._capture, self._quiet = self._capture, None, False
             ok = not any(ERROR_LINE.search(ln) for ln in captured)
             return EvalResult(ok, captured)
 
@@ -133,6 +152,8 @@ class Ghci:
     def _emit(self, line: str) -> None:
         if self._capture is not None:
             self._capture.append(line)
+            if self._quiet:
+                return
         self.on_output(line)
 
     async def stop(self) -> None:

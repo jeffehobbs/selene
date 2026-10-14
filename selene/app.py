@@ -9,11 +9,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from rich.cells import cell_len
 from rich.segment import Segment
+from rich.style import Style
 from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.color import Color
 from textual.containers import Horizontal
 from textual.css.query import NoMatches
 from textual.strip import Strip
@@ -25,6 +28,7 @@ from .files import DEFAULT_DIR, ConfirmScreen, ModelScreen, PathScreen, PrefsScr
 from .flow import (DEFAULT_DEPTH, DEPTHS, PHRASE, CtrlSender, FlowDirector, TidalClock,
                    ctrl_name, free_udp_port)
 from .ghci import BUNDLED_BOOT, Ghci
+from .highlight import ADDRESS as HIGHLIGHTS, Highlighter, place
 from .lanes import LaneModel, Lanes
 from .llm import (Ollama, build_system_prompt, evolve_message, fix_message,
                   unknown_sounds_message, user_message)
@@ -44,6 +48,12 @@ DEFAULT_MODEL = "gemma4:31b-mlx"
 MODEL_CHECK_EVERY = 15.0  # seconds between checks that Ollama and the model are there
 
 
+# What option+1 … option+9, option+0 type on a US Mac keyboard (and what
+# Textual calls alt+digit), as Textual names those keys.
+OPTION_DIGITS = ("inverted_exclamation_mark", "trade_mark_sign", "pound_sign", "cent_sign",
+                 "infinity", "section_sign", "pilcrow_sign", "bullet", "ª", "º")
+
+
 class PromptInput(Input):
     """Single-line prompt with shell-style up/down history, kept across
     launches (settings.history_path)."""
@@ -52,6 +62,10 @@ class PromptInput(Input):
         super().__init__(**kwargs)
         self.history: list[str] = settings.load_history()
         self._pos = len(self.history)
+
+    def check_consume_key(self, key: str, character: str | None) -> bool:
+        # option+digit is a mute key, not a character to type (see OPTION_DIGITS).
+        return key not in OPTION_DIGITS and super().check_consume_key(key, character)
 
     def remember(self, text: str) -> None:
         if text and (not self.history or self.history[-1] != text):
@@ -79,19 +93,78 @@ class Held:
 class PatternEditor(TextArea):
     """The pattern editor, with line numbers zero-padded to at least two
     digits (01, 02 … 10) so the code doesn't shift right when it reaches
-    line 10."""
+    line 10. It also draws Pulsar's two overlays: the tokens sounding right
+    now (`set_marks`), and a brief flash over code that was just played."""
 
     DIGITS = 2
+    FLASH_SECONDS = 0.25
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.marks: dict[int, list[tuple[int, int]]] = {}  # line -> column ranges
+        self.flashing: tuple[int, int, bool] | None = None  # first, last line, ok
+        self._flash_token: object | None = None
+        self._tints: dict[tuple, Style] = {}
+
+    def check_consume_key(self, key: str, character: str | None) -> bool:
+        # option+digit is a mute key, not a character to type (see OPTION_DIGITS).
+        return key not in OPTION_DIGITS and super().check_consume_key(key, character)
 
     @property
     def gutter_width(self) -> int:
         width = super().gutter_width
         return max(width, self.DIGITS + 2) if self.show_line_numbers else width
 
+    def set_marks(self, marks: dict[int, list[tuple[int, int]]]) -> None:
+        if marks != self.marks:
+            self.marks = marks
+            self.refresh()
+
+    def flash(self, first: int, last: int, ok: bool) -> None:
+        token = self._flash_token = object()
+        self.flashing = (first, last, ok)
+        self.refresh()
+        self.set_timer(self.FLASH_SECONDS, lambda: self._end_flash(token))
+
+    def _end_flash(self, token: object) -> None:
+        if self._flash_token is token:
+            self.flashing = None
+            self.refresh()
+
+    def _tint(self, name: str, amount: float) -> Style:
+        """A background of theme color `name`, `amount` of the way from the
+        surface color; kept per theme, since a frame paints many of them."""
+        key = (self.app.theme, name, amount)
+        if key not in self._tints:
+            colors = self.app.get_css_variables()
+            base = Color.parse(colors.get("surface", "#1e1e1e"))
+            color = base.blend(Color.parse(colors.get(name, "#888888")), amount)
+            self._tints[key] = Style(bgcolor=color.rich_color)
+        return self._tints[key]
+
     def render_line(self, y: int) -> Strip:
         strip = super().render_line(y)
-        if not self.show_line_numbers:
-            return strip
+        if self.show_line_numbers:
+            strip = self._pad_number(strip)
+        row = y + self.scroll_offset.y
+        gutter = self.gutter_width
+        if self.flashing and self.flashing[0] <= row <= self.flashing[1]:
+            ok = self.flashing[2]
+            strip = paint(strip, gutter, strip.cell_length,
+                          self._tint("success" if ok else "error", 0.35))
+        if ranges := self.marks.get(row):
+            text = self.document.get_line(row) if row < self.document.line_count else ""
+            style = self._tint("accent", 0.6) + Style(bold=True)
+            for a, b in ranges:
+                start, end = (gutter - self.scroll_offset.x
+                              + cell_len(text[:col].expandtabs(self.indent_width))
+                              for col in (a, b))
+                start, end = max(start, gutter), min(end, strip.cell_length)
+                if start < end:
+                    strip = paint(strip, start, end, style)
+        return strip
+
+    def _pad_number(self, strip: Strip) -> Strip:
         segments = list(strip)
         digits = self.gutter_width - 2
         if segments and segments[0].text[:digits].strip().isdigit():
@@ -100,6 +173,13 @@ class PatternEditor(TextArea):
             segments[0] = Segment(number + first.text[digits:], first.style, first.control)
             return Strip(segments, strip.cell_length)
         return strip
+
+
+def paint(strip: Strip, start: int, end: int, style: Style) -> Strip:
+    """`style` laid over cells start..end of a strip (over its own colors)."""
+    before, middle, after = strip.divide([start, end, strip.cell_length])
+    middle = Strip(Segment.apply_style(list(middle), post_style=style), middle.cell_length)
+    return Strip.join([before, middle, after])
 
 
 class Divider(Widget):
@@ -227,6 +307,15 @@ class Selene(App):
     BINDINGS = [
         Binding("escape", "hush", "Hush", priority=True),
         Binding("ctrl+e", "play_editor", "Play", priority=True),
+        # Pulsar's keys, for terminals that report them (kitty protocol), and
+        # ones Apple's Terminal can send: ctrl+j, option+digit.
+        Binding("ctrl+enter,ctrl+j", "play_block", "Play block", show=False, priority=True),
+        Binding("shift+enter,ctrl+backslash", "play_line", "Play line", show=False,
+                priority=True),
+        *(Binding(f"ctrl+{n},{key}", f"toggle_mute({n})", f"Mute d{n}", show=False,
+                  priority=True) for n, key in zip(range(1, 10), OPTION_DIGITS)),
+        Binding(f"ctrl+0,{OPTION_DIGITS[-1]}", "unmute_all", "Unmute all", show=False,
+                priority=True),
         Binding("ctrl+r", "retry", "Retry", priority=True),
         Binding("ctrl+n", "new_session", "New", priority=True),
         Binding("ctrl+f", "flow", "Flow", priority=True),
@@ -295,6 +384,9 @@ class Selene(App):
         self.lanes_on = bool(remembered["lanes"])
         self.split = float(remembered["split"])  # the log's share of the width, %
         self.tap_port = free_udp_port()
+        # Pulsar-style event highlighting, if the boot file sends positions.
+        self.marks = Highlighter()
+        self.highlighting = self._boot_supports(HIGHLIGHTS)
         # The .tidal file the editor was last saved to / opened from.
         self.current_file: Path | None = None
         self.saved_text = ""
@@ -326,6 +418,8 @@ class Selene(App):
         self.set_interval(1.0, self._discover)
         self.set_interval(MODEL_CHECK_EVERY, self._poll_model)
         self.set_interval(1.0, lambda: self.rec and self._render_bar())  # rec timer
+        if self.highlighting:
+            self.set_interval(1 / 30, self._paint_marks)
 
     # ── status ────────────────────────────────────────────────────────────
 
@@ -924,6 +1018,7 @@ class Selene(App):
             # Everything is about to be silent, so no glide: straight to neutral.
             self._flow_stop(log=False)
         await self.ghci.hush()
+        self.marks.clear()
         self.playing_code = ""
         self.held.clear()
         self.fading.clear()
@@ -1173,30 +1268,25 @@ class Selene(App):
     # ── generate / evaluate ───────────────────────────────────────────────
 
     @work(group="play", exclusive=True)
-    async def evaluate(self, code: str, source: str) -> None:
+    async def evaluate(self, code: str, source: str, lines: tuple[int, int] | None = None) -> None:
+        """Play code. `source` is editor (all of it), block or line (part of
+        it, at `lines`), raw (typed after !) or flow (Flow re-wrapping)."""
         if not code.strip():
             return
+        editor = self.query_one("#code", PatternEditor)
+        if source == "editor":
+            lines = (0, editor.document.line_count - 1)
         self._code_state("busy")
         self._claim(code)
-        result = await self.ghci.eval(self._wrap(code))
+        result = await self._play(code, first_line=lines[0] if lines else 0)
+        if lines:
+            editor.flash(*lines, result.ok)
         if result.ok:
             if source == "editor":
                 label = self.current_file.name if self.current_file else "the editor"
                 self._replace_current(code, label)
-            elif source == "raw":
-                editor = self.query_one("#code", TextArea)
-                clean = not self._editor_dirty()
-                if code.strip() == "hush":
-                    self.playing_code = ""
-                    self.held.clear()
-                else:
-                    self.playing_code = merge_layers(self.playing_code, code)
-                    self.fade_all_token = None
-                    for orbit in blocks.orbits_used(code):  # it's current now
-                        self.held.pop(orbit, None)
-                        self.fading.pop(orbit, None)
-                if clean:  # keep the editor showing what plays, unless mid-edit
-                    editor.text = self.playing_code
+            elif source in ("raw", "block", "line"):
+                self._merge_played(code, sync_editor=source == "raw")
             self._code_state("playing")
             if source != "flow":  # Flow re-wrapping what plays isn't news
                 self._save(code, f"({source})")
@@ -1204,6 +1294,80 @@ class Selene(App):
         else:
             self._code_state("failed")
         self._render_bar()
+
+    def _merge_played(self, code: str, sync_editor: bool) -> None:
+        """Part of the music was replayed: those layers change, the rest
+        play on as they were."""
+        editor = self.query_one("#code", TextArea)
+        clean = not self._editor_dirty()
+        if code.strip() == "hush":
+            self.playing_code = ""
+            self.held.clear()
+        else:
+            self.playing_code = merge_layers(self.playing_code, code)
+            self.fade_all_token = None
+            for orbit in blocks.orbits_used(code):  # it's current now
+                self.held.pop(orbit, None)
+                self.fading.pop(orbit, None)
+        if sync_editor:
+            if clean:  # keep the editor showing what plays, unless mid-edit
+                editor.text = self.playing_code
+        elif blocks.split_statements(editor.text) == blocks.split_statements(self.playing_code):
+            # The block came from the editor, and now everything in it is
+            # playing: keep its own text (comments, layout) as what plays.
+            self.playing_code = editor.text
+
+    async def _play(self, code: str, wrap=None, first_line: int = 0):
+        """Send code to GHCi, wrapped for Flow (or by `wrap`), with its
+        pattern strings marked for event highlighting when the boot file
+        supports it."""
+        wrap = wrap or self._wrap
+        plain = wrap(code)
+        if not self.highlighting:
+            return await self.ghci.eval(plain)
+        return await self.ghci.eval(wrap(self.marks.annotate(code, first_line)), plain=plain)
+
+    def _paint_marks(self) -> None:
+        editor = self.query_one("#code", PatternEditor)
+        active = self.marks.active(time.time())
+        editor.set_marks(place(active, editor.document.lines) if active else {})
+
+    def action_play_block(self) -> None:
+        """Play the statement under the cursor (Pulsar's ctrl+enter)."""
+        if self._modal():
+            return
+        editor = self.query_one("#code", PatternEditor)
+        span = blocks.statement_at(editor.text, editor.cursor_location[0])
+        if span is None:
+            self.log_line("no code on this line to play", "dim")
+            return
+        code = "\n".join(editor.document.lines[span[0]:span[1] + 1])
+        self.evaluate(code, source="block", lines=span)
+
+    def action_play_line(self) -> None:
+        """Play just the line under the cursor (Pulsar's shift+enter)."""
+        if self._modal():
+            return
+        editor = self.query_one("#code", PatternEditor)
+        row = editor.cursor_location[0]
+        line = editor.document.get_line(row)
+        if not line.strip() or line.strip().startswith("--"):
+            self.log_line("no code on this line to play", "dim")
+            return
+        self.evaluate(line.strip(), source="line", lines=(row, row))
+
+    def action_toggle_mute(self, n: int) -> None:
+        if self._modal():
+            return
+        orbit = f"d{n}"
+        if orbit in self._all_orbits():
+            self.toggle_orbit(orbit)
+        else:
+            self.log_line(f"{orbit} isn't playing", "dim")
+
+    def action_unmute_all(self) -> None:
+        if not self._modal() and self.muted:
+            self.orbit_command("unmute", "")
 
     @work(group="play", exclusive=True)
     async def generate(self, prompt: str) -> None:
@@ -1249,7 +1413,8 @@ class Selene(App):
                 continue
             self._set(llm="evaluating…")
             self._claim(code)
-            result = await self.ghci.eval(self._wrap(code))
+            result = await self._play(code)
+            editor.flash(0, editor.document.line_count - 1, result.ok)
             if result.ok:
                 break
             messages.append({"role": "user", "content": fix_message(result.error_text, code)})
@@ -1301,12 +1466,13 @@ class Selene(App):
         self.flow.set_muted(self.muted, now)
 
     async def _listen_tap(self) -> None:
-        clock, lanes = self.clock, self.lane_model
+        clock, lanes, marks = self.clock, self.lane_model, self.marks
 
         class Tap(asyncio.DatagramProtocol):
             def datagram_received(self, data, addr):
                 for timetag, event in clock.feed(data, time.time()):
                     lanes.add(timetag, event)
+                marks.feed(data)
 
         try:
             await asyncio.get_running_loop().create_datagram_endpoint(
@@ -1390,11 +1556,14 @@ class Selene(App):
             self.evaluate(self.playing_code, source="flow")
 
     def _boot_supports_flow(self) -> bool:
+        return self._boot_supports("SELENE_CTRL_PORT", "SELENE_TAP_PORT")
+
+    def _boot_supports(self, *needles: str) -> bool:
         try:
             text = Path(self.args.boot).read_text(errors="ignore")
         except OSError:
             return False
-        return "SELENE_CTRL_PORT" in text and "SELENE_TAP_PORT" in text
+        return all(n in text for n in needles)
 
     def _flow_stop(self, log: bool = True) -> None:
         for handle in self.flow_pending:
@@ -1505,10 +1674,10 @@ class Selene(App):
             if kind == "add":
                 # Arrive silent: the gain control is 0 before the pattern exists.
                 self.flow_ctrl.send(ctrl_name("gain", orbit), 0.0)
-                result = await self.ghci.eval(blocks.flowify(stmt))
+                result = await self._play(stmt, wrap=blocks.flowify)
             else:
-                result = await self.ghci.eval(
-                    blocks.as_xfade(blocks.flowify(stmt), depth.xfade))
+                result = await self._play(
+                    stmt, wrap=lambda c: blocks.as_xfade(blocks.flowify(c), depth.xfade))
             if result.ok:
                 ok = True
                 break
@@ -1658,13 +1827,28 @@ class Selene(App):
 
 
 def merge_layers(playing: str, raw: str) -> str:
-    """Raw `dN $ ...` lines replace that orbit's statement in the playing code."""
+    """Raw `dN $ ...` lines replace that orbit's statement in the playing
+    code, where it stands, so layers keep their places in the editor. A
+    setcps replaces the setcps; anything else new goes at the end."""
     if not playing:
         return raw
-    replaced = set(blocks.orbits_used(raw))
-    kept = [s for s in blocks.split_statements(playing)
-            if not set(blocks.orbits_used(s)) & replaced]
-    return "\n".join(kept + blocks.split_statements(raw))
+    out = blocks.split_statements(playing)
+    for stmt in blocks.split_statements(raw):
+        key = _layer_key(stmt)
+        hits = [i for i, s in enumerate(out) if (_layer_key(s) & key if key else s == stmt)]
+        if not hits:
+            out.append(stmt)
+            continue
+        out[hits[0]] = stmt
+        for i in reversed(hits[1:]):
+            del out[i]
+    return "\n".join(out)
+
+
+def _layer_key(stmt: str) -> set[str]:
+    if orbits := blocks.orbits_used(stmt):
+        return set(orbits)
+    return {"setcps"} if stmt.startswith("setcps") else set()
 
 
 def parse_args(argv=None) -> argparse.Namespace:

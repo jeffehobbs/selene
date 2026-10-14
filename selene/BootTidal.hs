@@ -17,9 +17,10 @@ default (Rational, Integer, Double, Pattern String)
 seleneCtrlPort <- maybe 6010 read <$> Env.lookupEnv "SELENE_CTRL_PORT" :: IO Int
 
 -- A copy of every event goes to selene's tap so Flow knows where the cycle
--- is and can land changes exactly on the beat.
+-- is and can land changes exactly on the beat. The tap also gets each
+-- event's place in the code (/editor/highlights), for event highlighting.
 seleneTapPort <- maybe 0 read <$> Env.lookupEnv "SELENE_TAP_PORT" :: IO Int
-seleneTap = [(superdirtTarget {oName = "selene", oPort = seleneTapPort, oBusPort = Nothing, oHandshake = False}, [superdirtShape]) | seleneTapPort > 0]
+seleneTap = [(superdirtTarget {oName = "selene", oPort = seleneTapPort, oBusPort = Nothing, oHandshake = False}, [superdirtShape, OSCContext "/editor/highlights"]) | seleneTapPort > 0]
 
 tidalInst <- mkTidalWith ((superdirtTarget, [superdirtShape]) : seleneTap) (defaultConfig {cCtrlPort = seleneCtrlPort})
 

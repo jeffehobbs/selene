@@ -141,3 +141,33 @@ def test_describe_change():
     assert describe_change(old, old.replace("superpiano", "supervibe")) == \
         '"superpiano" → "supervibe"'
     assert describe_change(old, old) == "no change to the code"
+
+
+def test_merge_layers_keeps_each_layer_in_its_place():
+    playing = 'setcps 1\nd1 $ s "bd*4"\nd2 $ s "hh*8"\nd3 $ s "cp"'
+    assert merge_layers(playing, 'd2 $ s "arpy"') == \
+        'setcps 1\nd1 $ s "bd*4"\nd2 $ s "arpy"\nd3 $ s "cp"'
+    assert merge_layers(playing, 'setcps 0.5') == \
+        'setcps 0.5\nd1 $ s "bd*4"\nd2 $ s "hh*8"\nd3 $ s "cp"'
+    assert merge_layers(playing, 'd4 $ s "sn"').endswith('d3 $ s "cp"\nd4 $ s "sn"')
+
+
+def test_statement_spans_match_split_statements():
+    from selene.blocks import split_statements, statement_at, statement_spans
+    code = ('setcps 1\n'
+            '-- drums\n'
+            'd1 $ stack [\n'
+            '  s "bd*4",\n'
+            '\n'
+            '  s "hh*8"\n'
+            ']\n'
+            '# gain 0.9\n'
+            '\n'
+            'd2 $ s "cp"   -- claps\n')
+    assert statement_spans(code) == [(0, 0), (2, 7), (9, 9)]
+    lines = code.splitlines()
+    assert [split_statements("\n".join(lines[a:b + 1]))[0] for a, b in statement_spans(code)] \
+        == split_statements(code)
+    assert statement_at(code, 4) == (2, 7)  # a blank line inside the stack
+    assert statement_at(code, 7) == (2, 7)
+    assert statement_at(code, 1) is None and statement_at(code, 8) is None

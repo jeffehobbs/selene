@@ -12,7 +12,11 @@ playing. Follow-up prompts revise what's playing: *"add a minor piano line on
 d2"*, *"half-time the drums"*, *"make it sparser"*.
 
 - **Code you can edit.** The generated pattern lands in an editor; tweak it and
-  press `ctrl+e` to play your version.
+  press `ctrl+e` to play your version, or play just the layer under the cursor
+  the way Pulsar does (`ctrl+enter`, or `ctrl+j`) while the others keep going.
+  Played code flashes green (red if GHCi rejects it).
+- **Event highlighting.** As in Pulsar, each mini-notation token in the editor
+  lights up while it sounds.
 - **Self-correcting.** If GHCi rejects the code, the error goes back to the
   model (up to twice) with a hint about the likely mistake. The previous
   pattern keeps playing until something valid arrives.
@@ -30,9 +34,11 @@ d2"*, *"half-time the drums"*, *"make it sparser"*.
   letters, the previous pass dimmed ahead of the playhead, and the sounds
   each layer played listed after it. Flow's drops, rolls and thinning are
   visible as they happen. `ctrl+l` hides it.
-- **Mute by clicking.** Each lane's `d1 d2 d3` chip (in the top bar when the
-  lanes are hidden) lights up on every hit: click to mute/unmute, shift-click
-  to solo. Mutes survive the model revising the pattern; `esc` clears them.
+- **Mute by clicking or by key.** Each lane's `d1 d2 d3` chip (in the top bar
+  when the lanes are hidden) lights up on every hit: click to mute/unmute,
+  shift-click to solo. `option+1`–`9` (or Pulsar's `ctrl+1`–`9`) toggle
+  `d1`–`d9`, and `option+0` / `ctrl+0` unmutes everything. Mutes survive the
+  model revising the pattern; `esc` clears them.
 - **Flow mode.** `ctrl+f` lets the music play itself, from slow drift to
   drops, fills and rhythm mutations on the beat, as active as you set it with
   `/flow 1`–`5`. Off until you turn it on. See [Flow](#flow).
@@ -68,6 +74,10 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 |---|---|
 | `enter` | generate from the prompt and play |
 | `ctrl+e` | play the editor contents |
+| `ctrl+enter` or `ctrl+j` | play the statement under the cursor; other layers play on |
+| `shift+enter` or `ctrl+\` | play only the line under the cursor |
+| `option+1`–`9` or `ctrl+1`–`9` | mute / unmute `d1`–`d9` |
+| `option+0` or `ctrl+0` | unmute everything |
 | `esc` | hush (also cancels a generation) |
 | `ctrl+r` | regenerate the last prompt |
 | `ctrl+n` | new context: next prompt ignores what's playing |
@@ -84,6 +94,14 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 | drag the divider | resize the ghci log / pattern panels (double-click: back to 50/50) |
 | click `dN` | mute / unmute that orbit |
 | shift-click `dN` | solo that orbit (again to un-solo) |
+
+`ctrl+enter`, `shift+enter` and `ctrl+digit` are Pulsar's keys, but only
+terminals that report them get them (kitty, Ghostty, WezTerm, iTerm2 with
+"Report modifiers using CSI u"). Apple's Terminal can't send them, so
+`ctrl+j`, `ctrl+\` and `option+digit` do the same jobs. `option+digit` works
+whether or not "Use Option as Meta key" is on. The catch is that the
+characters option+digit normally types (`¡ ™ £ ¢ ∞ § ¶ • ª º` on a US
+keyboard) can't be typed in selene.
 
 In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/cps 0.6`,
 `/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/fade 4 [CYCLES]`,
@@ -232,6 +250,14 @@ wrapped in `:{ … :}` and followed by a sentinel `putStrLn`, so selene knows
 exactly which output (and which errors) belong to each evaluation. SuperDirt
 is detected with a real OSC `/dirt/handshake`, since `sclang` holds UDP 57120
 even when SuperDirt isn't started.
+
+Event highlighting works like Pulsar's. Before code is sent, each pattern
+string is wrapped in `(deltaContext column id "…")`. The boot file sends every
+event's source position (`/editor/highlights`) to selene's tap port, and the
+`id` leads back to the line of code. If wrapping a string breaks a
+statement (a string that isn't a pattern, say), the statement quietly runs
+without it. A custom `--boot` file needs the bundled one's
+`OSCContext "/editor/highlights"` line for highlights.
 
 ## Tests
 

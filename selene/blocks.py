@@ -27,28 +27,56 @@ def extract_code(reply: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _skipped(stripped: str) -> bool:
+    return not stripped or stripped.startswith("--") or stripped in (":{", ":}")
+
+
+def statement_spans(code: str) -> list[tuple[int, int]]:
+    """(first line, last line) of each top-level statement, 0-based and
+    inclusive. Blank and comment lines inside a statement belong to it; ones
+    between statements belong to neither."""
+    spans: list[list[int]] = []
+    for i, raw in enumerate(code.splitlines()):
+        line = raw.rstrip()
+        stripped = line.strip()
+        if _skipped(stripped):
+            continue
+        top_level = not line[0].isspace()
+        if spans and (not top_level or stripped.startswith(CONTINUATION_START)):
+            spans[-1][1] = i
+        else:
+            spans.append([i, i])
+    return [(a, b) for a, b in spans]
+
+
+def statement_at(code: str, line: int) -> tuple[int, int] | None:
+    """The span of the statement covering `line`, if any (Pulsar's block)."""
+    return next(((a, b) for a, b in statement_spans(code) if a <= line <= b), None)
+
+
 def split_statements(code: str) -> list[str]:
     """Split code into top-level statements, dropping comments and blank lines.
 
     Continuation lines that sit at column 0 get indented so GHCi's layout rule
     doesn't read them as a new statement inside :{ :}.
     """
-    statements: list[list[str]] = []
-    for raw in code.splitlines():
-        line = raw.rstrip()
-        stripped = line.strip()
-        if not stripped or stripped.startswith("--"):
-            continue
-        if stripped in (":{", ":}"):
-            continue
-        top_level = not line[0].isspace()
-        if top_level and statements and stripped.startswith(CONTINUATION_START):
-            statements[-1].append("  " + stripped)
-        elif top_level or not statements:
-            statements.append([stripped])
-        else:
-            statements[-1].append(line)
-    return ["\n".join(s) for s in statements]
+    lines = code.splitlines()
+    statements = []
+    for a, b in statement_spans(code):
+        parts: list[str] = []
+        for raw in lines[a:b + 1]:
+            line = raw.rstrip()
+            stripped = line.strip()
+            if _skipped(stripped):
+                continue
+            if not parts:
+                parts.append(stripped)
+            elif not line[0].isspace():
+                parts.append("  " + stripped)
+            else:
+                parts.append(line)
+        statements.append("\n".join(parts))
+    return statements
 
 
 def wrap(statement: str) -> str:
