@@ -10,13 +10,11 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
+from . import platforms
+
 DIRT_PORT = 57120
-STARTUP = Path.home() / "Library/Application Support/SuperCollider/startup.scd"
+STARTUP = platforms.sc_support_dir() / "startup.scd"
 BUNDLED_STARTUP = Path(__file__).with_name("superdirt_startup.scd")
-SCLANG_CANDIDATES = [
-    "/Applications/SuperCollider.app/Contents/MacOS/sclang",
-    "/Applications/SuperCollider/SuperCollider.app/Contents/MacOS/sclang",
-]
 
 
 def dirt_listening(port: int = DIRT_PORT) -> bool:
@@ -78,7 +76,8 @@ def repl_line(code: str) -> bytes:
 
 
 def find_sclang() -> str | None:
-    return shutil.which("sclang") or next((p for p in SCLANG_CANDIDATES if Path(p).exists()), None)
+    return shutil.which("sclang") or next(
+        (str(p) for p in platforms.sclang_candidates() if p.exists()), None)
 
 
 class SuperDirt:

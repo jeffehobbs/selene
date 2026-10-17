@@ -23,7 +23,7 @@ d2"*, *"half-time the drums"*, *"make it sparser"*.
 - **Grounded in your install.** The model is told which Dirt-Samples banks and
   SuperDirt synths you actually have, and code naming sounds you don't have is
   sent back for a fix before it plays.
-- **Everything local.** No cloud APIs; default model is `gemma4:31b-mlx`.
+- **Everything local.** No cloud APIs; default model is `gemma4:31b-mlx` (`gemma4:31b` off Apple silicon).
 - **Swap models.** `ctrl+k` lists your installed Ollama models with their
   size, parameters, quantization and which are in memory; pick one and it
   loads straight away. The top bar's model light is green when it's ready,
@@ -50,13 +50,27 @@ d2"*, *"half-time the drums"*, *"make it sparser"*.
 
 ## Requirements
 
+selene runs on macOS. (Linux and Windows aren't supported yet, but its setup
+checks already know where things live there.)
+
 - **Python 3.11+** and [uv](https://docs.astral.sh/uv/)
-- **GHC + Tidal**: `ghcup install ghc` then `cabal update && cabal install --lib tidal`
-  (tested with GHC 9.14.1, Tidal 1.10.3). `ghci` must be on your `PATH`.
-- **SuperCollider + SuperDirt**: install SuperCollider, then in it run
-  `Quarks.install("SuperDirt")`. SC3-plugins enable the extra `super*` synths.
-- **Ollama** with a model pulled: `ollama pull gemma4:31b-mlx` (any model works;
-  see `--model`).
+- **GHC + Tidal**: follow the official TidalCycles guide for
+  [macOS](https://tidalcycles.org/docs/getting-started/macos_install),
+  [Linux](https://tidalcycles.org/docs/getting-started/linux_install) or
+  [Windows](https://tidalcycles.org/docs/getting-started/windows_install)
+  (tested with GHC 9.14.1, Tidal 1.10.3). If ghcup left `ghci` off your
+  `PATH`, selene finds it in `~/.ghcup/bin` anyway.
+- **SuperCollider + SuperDirt**: covered by the same guide (SuperDirt is the
+  `Quarks.install("SuperDirt")` step). [sc3-plugins](https://supercollider.github.io/sc3-plugins/)
+  are optional and add the extra `super*` synths.
+- **[Ollama](https://ollama.com/download)** with a model pulled. The default is
+  Gemma 4 31B: `ollama pull gemma4:31b-mlx` on Apple silicon, `ollama pull gemma4:31b`
+  elsewhere (about 19 GB). Any model works; see `--model` and `ctrl+k`.
+
+At launch selene checks for all of this. If something's missing it says
+what, with a button that opens the official instructions for your platform
+(the command to run, when there is one, is shown too). `/setup` checks again,
+for example after you've installed something.
 
 ## Run
 
@@ -106,7 +120,7 @@ keyboard) can't be typed in selene.
 In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/cps 0.6`,
 `/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/fade 4 [CYCLES]`,
 `/fade all`, `/stop 4`, `/take 4`, `/prefs`, `/prefer TEXT`, `/flow`, `/split 30` (the log's share of the width; `/split`
-resets), `/save [NAME]`, `/open [NAME]`, `/record`, `/model [NAME]` (no name: the picker), `/clear` (empties the ghci log), `/quiet` (see below), `/new`
+resets), `/save [NAME]`, `/open [NAME]`, `/record`, `/model [NAME]` (no name: the picker), `/clear` (empties the ghci log), `/quiet` (see below), `/setup` (checks what's installed), `/new`
 are commands (`/record tail N` sets the ring-out, `/record dir PATH` the folder).
 The split, whether the lanes are showing, the quiet log, the model you last picked, and
 where recordings go and how long they ring out are

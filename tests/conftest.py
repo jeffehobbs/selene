@@ -111,3 +111,17 @@ def dirt_up(monkeypatch):
     """Tests never offer to start the player's SuperDirt (or look for it)."""
     import selene.app
     monkeypatch.setattr(selene.app, "dirt_status", lambda *a, **k: "listening")
+
+
+@pytest.fixture(autouse=True)
+def no_setup_dialog(monkeypatch):
+    """Tests run without Ollama or with a made-up ghci on purpose; don't stop
+    for the setup dialog. Returns the real offer_setup for tests of it."""
+    import selene.app
+    real = selene.app.Selene.offer_setup
+
+    async def skip(self, needs, always=False):
+        pass
+
+    monkeypatch.setattr(selene.app.Selene, "offer_setup", skip)
+    return real

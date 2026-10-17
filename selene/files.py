@@ -7,10 +7,12 @@ from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, DirectoryTree, Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
+
+from .prereqs import THIS, Need
 
 DEFAULT_DIR = Path.home() / "Documents/selene"
 SUFFIX = ".tidal"
@@ -36,7 +38,7 @@ class TidalTree(DirectoryTree):
 
 
 DIALOG_CSS = """
-PathScreen, ConfirmScreen, PrefsScreen, ModelScreen { align: center middle; }
+PathScreen, ConfirmScreen, PrefsScreen, ModelScreen, SetupScreen { align: center middle; }
 #dialog { width: 72; height: auto; max-height: 80%; padding: 1 2;
           border: round $accent; background: $surface; }
 #dialog TidalTree { height: 16; margin-top: 1; }
@@ -123,6 +125,65 @@ class ConfirmScreen(ModalScreen[bool]):
 
     def action_cancel(self) -> None:
         self.dismiss(False)
+
+
+class SetupScreen(ModalScreen[None]):
+    """What selene couldn't find, each with a button that opens the official
+    instructions for this platform."""
+
+    DEFAULT_CSS = DIALOG_CSS + """
+    SetupScreen #dialog { width: 80; max-height: 95%; }
+    SetupScreen VerticalScroll { height: auto; max-height: 60vh; }
+    SetupScreen .need { height: auto; margin-top: 1; }
+    SetupScreen .need Horizontal { margin-top: 0; }
+    SetupScreen #continue-row { dock: bottom; }
+    """
+    BINDINGS = [Binding("escape", "dismiss", "Continue")]
+
+    def __init__(self, needs: list[Need], plat: str):
+        super().__init__()
+        self.needs = needs
+        self.plat = plat
+
+    def compose(self) -> ComposeResult:
+        required = [n for n in self.needs if not n.optional]
+        with Vertical(id="dialog") as dialog:
+            dialog.border_title = "setup"
+            yield Static(f"Selene can't find everything it needs on {THIS[self.plat]}."
+                         if required else "Selene has what it needs. Optional:")
+            with VerticalScroll():
+                for i, need in enumerate(self.needs):
+                    text = Text()
+                    text.append("○ " if need.optional else "● ",
+                                style="dim" if need.optional else "red")
+                    text.append(need.title, style="bold")
+                    if need.optional:
+                        text.append(" (optional)", style="dim")
+                    text.append(f"\n{need.why}")
+                    if need.command:
+                        text.append(f"\n  {need.command}", style="bold cyan")
+                    text.append(f"\n{need.url}", style=f"dim link {need.url}")
+                    with Vertical(classes="need"):
+                        yield Static(text)
+                        with Horizontal():
+                            yield Button("Open instructions", id=f"open-{i}", compact=True,
+                                         variant="default" if need.optional else "primary")
+            with Horizontal(id="continue-row"):
+                yield Static("/setup checks again", classes="spacer")
+                yield Button("Continue", id="continue", compact=True)
+
+    def on_mount(self) -> None:
+        self.query_one("#open-0" if any(not n.optional for n in self.needs) else "#continue",
+                       Button).focus()
+
+    @on(Button.Pressed)
+    def pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "continue":
+            self.dismiss()
+        elif event.button.id and event.button.id.startswith("open-"):
+            url = self.needs[int(event.button.id[5:])].url
+            self.app.open_url(url)
+            self.notify(f"opened {url}", timeout=3)
 
 
 class PrefsScreen(ModalScreen[str | None]):

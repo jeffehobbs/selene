@@ -261,6 +261,7 @@ async def test_offers_to_start_superdirt(monkeypatch):
     app = Selene(parse_args(["--boot", str(TEST_BOOT)]))
     async with app.run_test(size=(120, 34)) as pilot:
         assert await wait_for(lambda: dialog(app), 5)
+        assert await wait_for(lambda: app.screen.focused is not None, 2)
         assert app.screen.focused.id == "yes"  # Start is the default here
         await pilot.press("escape")  # declines, and doesn't hush anything
         assert await wait_for(lambda: not app._modal(), 2)

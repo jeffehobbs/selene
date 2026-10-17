@@ -119,6 +119,7 @@ async def test_app_asks_before_stopping_a_stray(monkeypatch):
         assert await wait_for(lambda: dialog(app))
         assert "pid 52975, running since Tue Oct 6 06:12:27 2026" in str(
             app.screen.query_one("Static").render())
+        assert await wait_for(lambda: app.screen.focused is not None)
         assert app.screen.focused.id == "no"
         await pilot.press("escape")
         assert await wait_for(lambda: not app._modal())

@@ -5,6 +5,7 @@ import asyncio
 import math
 import os
 import re
+import shutil
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -25,8 +26,9 @@ from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import Footer, Input, RichLog, Static, TextArea
 
-from . import blocks, catalog, recorder, settings
-from .files import DEFAULT_DIR, ConfirmScreen, ModelScreen, PathScreen, PrefsScreen, resolve
+from . import blocks, catalog, platforms, prereqs, recorder, settings
+from .files import (DEFAULT_DIR, ConfirmScreen, ModelScreen, PathScreen, PrefsScreen, SetupScreen,
+                    resolve)
 from .flow import (DEFAULT_DEPTH, DEPTHS, PHRASE, CtrlSender, FlowDirector, TidalClock,
                    ctrl_name, free_udp_port)
 from .ghci import BUNDLED_BOOT, Ghci
@@ -46,7 +48,7 @@ FLOW_SPEED = float(os.environ.get("SELENE_FLOW_SPEED", "1"))
 # Recording starts and stops this long before a phrase boundary plays, to
 # cover the trip to sclang.
 REC_LEAD = 0.02
-DEFAULT_MODEL = "gemma4:31b-mlx"
+DEFAULT_MODEL = prereqs.recommended_model()  # the MLX build on Apple silicon
 MODEL_CHECK_EVERY = 15.0  # seconds between checks that Ollama and the model are there
 LOG_LINES = 2000
 # SuperCollider lines the quiet log still shows: its errors, and selene's own
@@ -344,7 +346,9 @@ class Selene(App):
         # --model wins; then the model last picked in the app; then the default.
         model = args.model or settings.load()["model"] or DEFAULT_MODEL
         self.ollama = Ollama(args.ollama_url, model)
-        self.ghci = Ghci(args.ghci, Path(args.boot), on_output=self._ghci_line)
+        # ghcup's ghci counts even when a fresh install left it off PATH.
+        self.ghci_path = prereqs.find_ghci(args.ghci)
+        self.ghci = Ghci(self.ghci_path or args.ghci, Path(args.boot), on_output=self._ghci_line)
         self.dirt = SuperDirt(on_output=self._dirt_line)
         self.recorder = Recorder()
         # The take in progress: phase (armed/recording/stopping), path, since.
@@ -641,8 +645,15 @@ class Selene(App):
 
     @work(group="services")
     async def start_services(self) -> None:
+        # GHCi boots while the player reads any dialogs.
+        ghci = asyncio.create_task(self._start_ghci())
         self._set(dirt=await asyncio.to_thread(dirt_status))
-        if self.state["dirt"] == "off":
+        await self._check_model()
+        needs = await self._needs()
+        await self.offer_setup(needs)
+        if any(n.key == "supercollider" for n in needs):
+            pass  # nothing to start SuperDirt with; the setup dialog said so
+        elif self.state["dirt"] == "off":
             if self.args.superdirt:
                 self.action_boot_dirt()
             else:
@@ -656,17 +667,55 @@ class Selene(App):
         elif self.state["dirt"] == "sclang":
             self.log_line("sclang is running but SuperDirt isn't answering; "
                           "run SuperDirt.start in SuperCollider", "yellow")
-        await self._check_model()
+        result = await ghci
+        if result and not result.ok and prereqs.TIDAL_MISSING.search(result.error_text):
+            await self.offer_setup([prereqs.tidal_need(ghci_found=True)])
+
+    async def _start_ghci(self):
+        if not self.ghci_path:  # the setup dialog covers it
+            self._set(ghci="dead")
+            return None
+        if self.ghci_path != shutil.which(self.args.ghci):
+            self.log_line(f"using {self._pretty_path(Path(self.ghci_path))} "
+                          f"(ghcup's bin folder isn't on your PATH)", "dim")
         try:
             await self._listen_tap()
             result = await self.ghci.start(ctrl_port=free_udp_port(), tap_port=self.tap_port)
         except FileNotFoundError:
-            self.log_line(f"can't run {self.args.ghci!r}; install GHC + tidal", "red")
+            self.log_line(f"can't run {self.ghci_path!r}; install GHC + Tidal", "red")
             self._set(ghci="dead")
-            return
+            return None
         self._set(ghci="ready" if result.ok else "dead")
         if not result.ok:
             self.log_line("GHCi failed to boot Tidal:\n" + result.error_text, "red")
+        return result
+
+    async def _needs(self) -> list[prereqs.Need]:
+        """What's missing, from the lights already checked plus a look on disk."""
+        needs = [] if self.ghci_path else [prereqs.tidal_need()]
+        needs += await asyncio.to_thread(prereqs.sound_needs, self.state["dirt"])
+        needs += prereqs.ollama_needs(self.state["ollama"], self.ollama.model)
+        return needs
+
+    async def offer_setup(self, needs: list[prereqs.Need], always: bool = False) -> None:
+        """Log what's missing; if anything required is (or the player asked,
+        with /setup), show the dialog with each one's instructions."""
+        for need in needs:
+            self.log_line(f"{'optional' if need.optional else 'missing'}: {need.title} — "
+                          f"{need.url}", "dim" if need.optional else "yellow")
+        if needs and (always or any(not n.optional for n in needs)):
+            await self.push_screen_wait(SetupScreen(needs, platforms.current()))
+
+    @work(group="setup", exclusive=True)
+    async def setup_command(self) -> None:
+        if self._modal():
+            return
+        self._set(dirt=await asyncio.to_thread(dirt_status))
+        await self._check_model()
+        needs = await self._needs()
+        if not needs:
+            self.log_line("selene has everything it needs", "green")
+        await self.offer_setup(needs, always=True)
 
     # ── actions ───────────────────────────────────────────────────────────
 
@@ -723,12 +772,14 @@ class Selene(App):
             self.log_entries.clear()
         elif name == "quiet":
             self.set_quiet(not self.quiet)
+        elif name == "setup":
+            self.setup_command()
         elif name == "record":
             self.record_command(arg.strip())
         else:
             self.log_line("commands: /hush /cps N /bpm N /mute N /unmute [N] /solo N "
                           "/prefs /prefer TEXT /fade N|held|all [CYCLES] /stop N|held|all /take N /flow [1-5] /split [N] /save [NAME] /open [NAME] "
-                          "/record [stop|dir PATH] /model [NAME] /clear /quiet /new", "yellow")
+                          "/record [stop|dir PATH] /model [NAME] /clear /quiet /setup /new", "yellow")
 
     def orbit_command(self, name: str, arg: str) -> None:
         orbits = self._all_orbits()

@@ -3,9 +3,11 @@
 import re
 from pathlib import Path
 
-QUARKS = Path.home() / "Library/Application Support/SuperCollider/downloaded-quarks"
+from . import platforms
 
-# Used when SuperDirt isn't installed where we look (e.g. Linux paths).
+QUARKS = platforms.sc_support_dir() / "downloaded-quarks"
+
+# Used when SuperDirt isn't installed where we look.
 FALLBACK_SAMPLES = (
     "808 808bd 808sd 808hc 808oh bd sn sd hh hh27 oh cp realclaps cb cr rs lt mt ht "
     "drum kicklinn linnhats jazz house techno tech hardkick clubkick breaks125 "
