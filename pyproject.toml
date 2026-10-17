@@ -10,6 +10,8 @@ keywords = ["tidalcycles", "supercollider", "live-coding", "ollama", "tui"]
 dependencies = [
     "textual>=0.80",
     "httpx>=0.27",
+    "mido>=1.3.3",
+    "python-rtmidi>=1.5.8",
 ]
 
 [project.urls]

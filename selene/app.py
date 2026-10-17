@@ -22,11 +22,12 @@ from textual.binding import Binding
 from textual.color import Color
 from textual.containers import Horizontal
 from textual.css.query import NoMatches
+from textual.message import Message
 from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import Footer, Input, RichLog, Static, TextArea
 
-from . import blocks, catalog, platforms, prereqs, recorder, settings
+from . import blocks, catalog, midi, platforms, prereqs, recorder, settings
 from .files import (DEFAULT_DIR, ConfirmScreen, ModelScreen, PathScreen, PrefsScreen, SetupScreen,
                     resolve)
 from .flow import (DEFAULT_DEPTH, DEPTHS, PHRASE, CtrlSender, FlowDirector, TidalClock,
@@ -36,6 +37,7 @@ from .highlight import ADDRESS as HIGHLIGHTS, Highlighter, place
 from .lanes import LaneModel, Lanes
 from .llm import (Ollama, build_system_prompt, evolve_message, fix_message,
                   unknown_sounds_message, user_message)
+from .midi import Monitor, MidiInput, NoteBuffer
 from .recorder import Recorder
 from .superdirt import (DIRT_PORT, STARTUP, SuperDirt, dirt_status, stop_external, stop_strays,
                         stray_servers)
@@ -49,6 +51,10 @@ FLOW_SPEED = float(os.environ.get("SELENE_FLOW_SPEED", "1"))
 # cover the trip to sclang.
 REC_LEAD = 0.02
 DEFAULT_MODEL = prereqs.recommended_model()  # the MLX build on Apple silicon
+MIDI_CHECK_EVERY = 5.0  # seconds between looks for a keyboard plugged in or out
+# The quiet metronome /midi click plays, to give played notes a beat to land on.
+CLICK_ORBIT = "d12"
+CLICK = f'{CLICK_ORBIT} $ s "hh*4" # gain 0.8'
 MODEL_CHECK_EVERY = 15.0  # seconds between checks that Ollama and the model are there
 LOG_LINES = 2000
 # SuperCollider lines the quiet log still shows: its errors, and selene's own
@@ -335,6 +341,7 @@ class Selene(App):
         Binding("ctrl+k", "models", "Model", priority=True),
         Binding("ctrl+b", "boot_dirt", "SuperDirt", priority=True),
         # One key, two footer labels; check_action shows the one that applies.
+        Binding("ctrl+y", "capture", "Capture", priority=True),
         Binding("ctrl+g", "record", "Rec", priority=True),
         Binding("ctrl+g", "stop_record", "Stop Rec", priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
@@ -351,6 +358,14 @@ class Selene(App):
         self.ghci = Ghci(self.ghci_path or args.ghci, Path(args.boot), on_output=self._ghci_line)
         self.dirt = SuperDirt(on_output=self._dirt_line)
         self.recorder = Recorder()
+        # MIDI keyboard: notes are kept as played; ctrl+y writes the last phrase.
+        self.midi = MidiInput(self._midi_deliver)
+        self.midi_on = True
+        self.played = NoteBuffer()
+        self.monitor = Monitor()
+        self.midi_hit = 0.0
+        self.midi_click = False
+        self._midi_missing: str | None = None  # a chosen port we've said is absent
         # The take in progress: phase (armed/recording/stopping), path, since.
         self._rec: dict | None = None
         self.preferences = settings.load_preferences()
@@ -432,6 +447,8 @@ class Selene(App):
         self.start_services()
         self.set_interval(1.0, self._discover)
         self.set_interval(MODEL_CHECK_EVERY, self._poll_model)
+        self._poll_midi()
+        self.set_interval(MIDI_CHECK_EVERY, self._poll_midi)
         self.set_interval(1.0, lambda: self.rec and self._render_bar())  # rec timer
         if self.highlighting:
             self.set_interval(1 / 30, self._paint_marks)
@@ -456,6 +473,12 @@ class Selene(App):
         bar.append("● ", style=light).append(s["model"]).append(label)
         if s["llm"]:
             bar.append(f"  {s['llm']}", style="italic yellow")
+        if self.midi.name:
+            hit = time.time() - self.midi_hit < 0.15
+            bar.append("   ♪ ", style="bold green" if hit else "green")
+            bar.append(self.midi.name, style="bold" if hit else "")
+            if self.midi_click:
+                bar.append(" · click", style="dim")
         if s["flow"]:
             bar.append(f"   ☯{self.flow_depth} {s['flow']}", style="magenta")
         if self.rec:
@@ -573,6 +596,8 @@ class Selene(App):
         self.refresh_bindings()  # Rec <-> Stop Rec in the footer
 
     def check_action(self, action: str, parameters) -> bool | None:
+        if action == "capture":  # only with a keyboard (/capture explains otherwise)
+            return bool(self.midi.name)
         if action == "record":
             return self._rec is None
         if action == "stop_record":
@@ -774,12 +799,16 @@ class Selene(App):
             self.set_quiet(not self.quiet)
         elif name == "setup":
             self.setup_command()
+        elif name == "midi":
+            self.midi_command(arg.strip())
+        elif name == "capture":
+            self.action_capture()
         elif name == "record":
             self.record_command(arg.strip())
         else:
             self.log_line("commands: /hush /cps N /bpm N /mute N /unmute [N] /solo N "
                           "/prefs /prefer TEXT /fade N|held|all [CYCLES] /stop N|held|all /take N /flow [1-5] /split [N] /save [NAME] /open [NAME] "
-                          "/record [stop|dir PATH] /model [NAME] /clear /quiet /setup /new", "yellow")
+                          "/record [stop|dir PATH] /model [NAME] /midi [on|off|PORT|sound S|offset MS|click] /capture /clear /quiet /setup /new", "yellow")
 
     def orbit_command(self, name: str, arg: str) -> None:
         orbits = self._all_orbits()
@@ -962,6 +991,8 @@ class Selene(App):
         phrase_seconds = 4 / (self.clock.cps or 0.5625)
         changed = False
         for orbit, t in self.lane_model.last_event.items():
+            if orbit == CLICK_ORBIT and self.midi_click:
+                continue
             if orbit not in known and t > self.last_known.get(orbit, 0) + 1.0 and now - t < 2:
                 self.held[orbit] = Held(None, "outside selene")
                 changed = True
@@ -1889,6 +1920,7 @@ class Selene(App):
         self.exit()
 
     async def _shut_down(self) -> None:
+        self.midi.close()
         self.workers.cancel_group(self, "record")
         if self.rec:  # close the file properly before sclang goes away
             self.rec = None
@@ -1905,6 +1937,172 @@ class Selene(App):
         await self.ghci.stop()
         await self.dirt.stop()
         await self.ollama.close()
+
+    # ── MIDI ──────────────────────────────────────────────────────────────
+
+    class MidiIn(Message):
+        def __init__(self, message, t: float):
+            super().__init__()
+            self.message, self.t = message, t
+
+    def _midi_deliver(self, message, t: float) -> None:
+        """On rtmidi's thread: post_message is thread-safe, and the handler
+        then runs inside the app (where timers and widgets work)."""
+        self.post_message(self.MidiIn(message, t))
+
+    def on_selene_midi_in(self, event: "Selene.MidiIn") -> None:
+        self.midi_message(event.message, event.t)
+
+    def midi_message(self, message, t: float) -> None:
+        kind = getattr(message, "type", "")
+        if kind == "note_on" and message.velocity:
+            self.played.note_on(message.note, message.velocity, t)
+            if self.state["dirt"] == "listening":
+                self.monitor.play(settings.load()["midi_sound"], message.note, message.velocity)
+            self.midi_hit = time.time()
+            self._render_bar()
+            self.set_timer(0.2, self._render_bar)
+        elif kind in ("note_off", "note_on"):
+            self.played.note_off(message.note, t)
+        elif kind == "control_change" and message.control == 64:
+            self.played.sustain(message.value >= 64, t)
+
+    def _poll_midi(self) -> None:
+        """Connect to a keyboard when one appears; notice when it goes."""
+        names = MidiInput.available()
+        if self.midi.name and self.midi.name not in names:
+            self.log_line(f"midi: {self.midi.name} went away", "yellow")
+            self.midi.close()
+            self._midi_changed()
+        if self.midi.name or not self.midi_on:
+            return
+        wanted = self.args.midi or settings.load()["midi_port"]
+        if wanted:
+            match = next((n for n in names if n == wanted), None) or \
+                next((n for n in names if wanted.lower() in n.lower()), None)
+            if not match:
+                if self._midi_missing != wanted:
+                    self._midi_missing = wanted
+                    self.log_line(f"midi: {wanted} isn't connected"
+                                  + (f" (have: {', '.join(names)})" if names else ""), "dim")
+                return
+        else:
+            match = next(iter(midi.keyboards(names)), None)
+            if not match:
+                return
+        try:
+            self.midi.open(match)
+        except Exception as e:  # noqa: BLE001 - port busy, backend errors
+            self.log_line(f"midi: couldn't open {match}: {e}", "red")
+            return
+        self._midi_missing = None
+        self.log_line(f"midi: {match} · play, then ctrl+y writes what you played", "green")
+        self._midi_changed()
+
+    def _midi_changed(self) -> None:
+        self.refresh_bindings()
+        self._render_bar()
+
+    def midi_command(self, arg: str) -> None:
+        name, _, rest = arg.partition(" ")
+        rest = rest.strip()
+        current = settings.load()
+        if not arg:
+            ports = MidiInput.available()
+            self.log_line(f"midi: {self.midi.name or 'no keyboard'} · sound {current['midi_sound']}"
+                          f" · offset {current['midi_offset']:g} ms · ports: "
+                          f"{', '.join(ports) or 'none'}", "magenta")
+        elif name == "off":
+            self.midi_on = False
+            self.midi.close()
+            self._midi_changed()
+            self.log_line("midi off (/midi on to listen again)", "magenta")
+        elif name == "on":
+            self.midi_on = True
+            self._poll_midi()
+            if not self.midi.name:
+                self.log_line("midi on · no keyboard found yet", "magenta")
+        elif name == "sound" and rest:
+            settings.save(midi_sound=rest)
+            self.log_line(f"midi: keys play {rest}", "magenta")
+        elif name == "offset":
+            try:
+                ms = float(rest)
+            except ValueError:
+                self.log_line("/midi offset MS: how late your keys land against what "
+                              "you hear (e.g. 20)", "yellow")
+                return
+            settings.save(midi_offset=ms)
+            self.log_line(f"midi: offset {ms:g} ms", "magenta")
+        elif name == "click":
+            self.toggle_click(not self.midi_click)
+        else:  # a port name, or part of one
+            settings.save(midi_port=arg)
+            self.midi.close()
+            self.midi_on = True
+            self._midi_missing = None
+            self._poll_midi()
+
+    @work(group="click", exclusive=True)
+    async def toggle_click(self, on: bool) -> None:
+        if not self.ghci.running:
+            self.log_line("the click needs GHCi running", "yellow")
+            return
+        if on:
+            result = await self.ghci.eval(CLICK)
+            self.midi_click = result.ok
+            if result.ok:
+                self.log_line("click on · play along, then ctrl+y (/midi click stops it)",
+                              "magenta")
+        else:
+            await self.ghci.eval(f"{CLICK_ORBIT} silence")
+            self.midi_click = False
+            self.last_known[CLICK_ORBIT] = time.time()  # its last hits aren't a new layer
+        self._render_bar()
+
+    def action_capture(self) -> None:
+        """Write the phrase just played on the keyboard into the editor as a new
+        layer, on Tidal's cycle grid. It doesn't play until the player plays it."""
+        if self._modal():
+            return
+        if not self.played.notes:
+            self.log_line("nothing played yet" if self.midi.name else
+                          "no MIDI keyboard connected (/midi lists the ports)", "yellow")
+            return
+        if not self.clock.known:
+            self.log_line("nothing's playing, so there's no beat to put your notes on: "
+                          "start something (or /midi click) and play again", "yellow")
+            return
+        now = time.time()
+        offset = float(settings.load()["midi_offset"]) / 1000
+        placed = [midi.Note(self.clock.cycle_at(p.on - offset), p.note, p.velocity,
+                            (p.off or now) - p.on) for p in self.played.notes]
+        orbit = self._free_orbit()
+        if orbit is None:
+            self.log_line("no free orbit for it (d1–d10 are all in use)", "yellow")
+            return
+        cap = midi.transcribe(midi.last_phrase(placed), settings.load()["midi_sound"],
+                              self.clock.cps, orbit)
+        self.played.notes.clear()
+        editor = self.query_one("#code", PatternEditor)
+        text = editor.text.rstrip()
+        line = text.count("\n") + 2 if text else 0
+        editor.text = (text + "\n\n" if text else "") + cap.code + "\n"
+        editor.move_cursor((line, 0))
+        editor.scroll_cursor_visible()
+        self._code_state(None)
+        cycles = f"{cap.cycles} cycle{'s' if cap.cycles > 1 else ''}"
+        self.log_line(f"captured {cap.notes} note{'s' if cap.notes > 1 else ''} over {cycles} "
+                      f"→ {orbit} · ctrl+j plays it" +
+                      (f" (kept the last {cycles})" if cap.trimmed else ""), "green")
+        if self.midi_click:
+            self.toggle_click(False)
+
+    def _free_orbit(self) -> str | None:
+        editor = self.query_one("#code", PatternEditor).text
+        used = set(blocks.orbits_used(self.playing_code)) | set(self.held) | \
+            set(blocks.orbits_used(editor))
+        return next((f"d{n}" for n in range(1, 11) if f"d{n}" not in used), None)
 
     async def on_unmount(self) -> None:
         # However the app ends (ctrl+q, ctrl+c, a crash, a test), never leave
@@ -1951,6 +2149,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--flow-depth", type=int, choices=sorted(DEPTHS), default=DEFAULT_DEPTH,
                    help=f"how active Flow is when you turn it on, 1 (gentle drift) to "
                         f"{max(DEPTHS)} (default: {DEFAULT_DEPTH}); change live with /flow N")
+    p.add_argument("--midi", metavar="PORT",
+                   help="MIDI input to listen to, or part of its name (default: the last one "
+                        "chosen with /midi, else the first keyboard found)")
     p.add_argument("--fix-attempts", type=int, default=2,
                    help="times to feed GHCi errors back to the model (default: 2)")
     return p.parse_args(argv)

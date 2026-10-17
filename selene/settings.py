@@ -12,8 +12,11 @@ DEFAULT_PATH = Path.home() / ".local/share/selene/settings.json"
 # model "" means: the default (DEFAULT_MODEL in app.py); the picker remembers
 # the player's last choice here.
 # quiet: the log hides GHCi's and SuperCollider's routine output.
+# midi_port "" means: the first keyboard found. midi_sound: what played keys
+# sound like (and what a capture plays). midi_offset: milliseconds the
+# player's keys lag the sound they hear (audio interface latency).
 DEFAULTS = {"split": 50.0, "lanes": True, "record_dir": "", "record_tail": 8.0, "model": "",
-            "quiet": True}
+            "quiet": True, "midi_port": "", "midi_sound": "supersquare", "midi_offset": 0.0}
 
 
 def path() -> Path:

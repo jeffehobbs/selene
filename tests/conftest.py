@@ -125,3 +125,10 @@ def no_setup_dialog(monkeypatch):
 
     monkeypatch.setattr(selene.app.Selene, "offer_setup", skip)
     return real
+
+
+@pytest.fixture(autouse=True)
+def no_midi_ports(monkeypatch):
+    """Tests never connect to the player's MIDI keyboard."""
+    from selene.midi import MidiInput
+    monkeypatch.setattr(MidiInput, "available", staticmethod(lambda: []))

@@ -44,6 +44,9 @@ d2"*, *"half-time the drums"*, *"make it sparser"*.
   `/flow 1`–`5`. Off until you turn it on. See [Flow](#flow).
 - **Record to WAV.** `ctrl+g` records what SuperCollider plays, starting
   and stopping on the beat. See [Recording](#recording).
+- **Play it in.** Plug in a MIDI keyboard, play a riff along with what's
+  playing, and `ctrl+y` writes it into the editor as a new layer, on the beat.
+  See [MIDI keyboard](#midi-keyboard).
 - **Session log.** Every pattern that plays is appended to
   `~/.local/share/selene/<date>.tidal`, and every prompt you type is kept
   (`↑` reaches back across launches).
@@ -102,6 +105,7 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 | `ctrl+t` | your preferences for the model (also the footer's Prefs button) |
 | `ctrl+k` | pick the model from the ones Ollama has installed |
 | `ctrl+b` | boot SuperDirt |
+| `ctrl+y` | write what you just played on the MIDI keyboard as a new layer |
 | `ctrl+g` | record to WAV: start / stop on the next phrase (also the footer's Rec button, which reads Stop Rec while recording) |
 | `ctrl+q` | quit (hushes, stops anything selene started) |
 | `↑` / `↓` | prompt history, across launches |
@@ -120,7 +124,7 @@ keyboard) can't be typed in selene.
 In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/cps 0.6`,
 `/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/fade 4 [CYCLES]`,
 `/fade all`, `/stop 4`, `/take 4`, `/prefs`, `/prefer TEXT`, `/flow`, `/split 30` (the log's share of the width; `/split`
-resets), `/save [NAME]`, `/open [NAME]`, `/record`, `/model [NAME]` (no name: the picker), `/clear` (empties the ghci log), `/quiet` (see below), `/setup` (checks what's installed), `/new`
+resets), `/save [NAME]`, `/open [NAME]`, `/record`, `/midi` (see [MIDI keyboard](#midi-keyboard)), `/capture`, `/model [NAME]` (no name: the picker), `/clear` (empties the ghci log), `/quiet` (see below), `/setup` (checks what's installed), `/new`
 are commands (`/record tail N` sets the ring-out, `/record dir PATH` the folder).
 The split, whether the lanes are showing, the quiet log, the model you last picked, and
 where recordings go and how long they ring out are
@@ -164,6 +168,50 @@ syntax rules) stays as it is.
 Edits you make in the editor are the base for your next prompt even if you
 haven't played them yet, so you can sketch a change and ask the model to run
 with it.
+
+## MIDI keyboard
+
+selene listens to the first MIDI keyboard it finds (plugging one in or out is
+noticed within a few seconds), and the top bar shows `♪` and its name. The
+keys sound through SuperDirt as you play, in `supersquare` unless you change it.
+
+Play along with what's playing, then press `ctrl+y` (or `/capture`). The
+phrase you just played, meaning everything since the last pause of a cycle or
+more, is placed on Tidal's grid and written into the editor as the next free
+`dN`:
+
+```haskell
+d2 $ n "<[c5 ds5 [g5 as5] ~] [c6 ~ g5 ~]>" # s "supersquare" # sustain 0.15
+```
+
+- The phrase starts on the cycle where you played your first note (a note a
+  little early still counts as the downbeat). It lasts 1, 2 or 4 cycles; past
+  4, the last 4 are kept.
+- Each cycle gets the grid that fits it best: quarters, 8ths, 16ths or
+  triplets. Light swing stays on 8ths. Keys struck together become a chord
+  (`[c5,e5,g5]`), and the sustain pedal counts.
+- A long phrase is written a cycle per line, as `n (cat ["…", "…"])`
+  (the same as `"<… …>"`), with each `#` on its own line.
+- `# gain` follows your velocity only if you played with some dynamics.
+  `# sustain` is how long you typically held the keys.
+- It doesn't play until you play it (`ctrl+j` with the cursor on it, which is
+  where it lands). Because unplayed edits are what your next prompt builds on,
+  you can also just ask: *"build a dubby track around this riff"*.
+
+The notes are placed against the beat Tidal is playing, so something has to
+be playing. If nothing is, `/midi click` starts a quiet hi-hat on `d12` to
+play along with, and it stops once you capture.
+
+| command | |
+|---|---|
+| `/midi` | the keyboard in use, its settings and the MIDI ports there are |
+| `/midi NAME` | use that port (part of its name is enough); remembered |
+| `/midi sound supersaw` | what the keys play (and what a capture uses) |
+| `/midi offset 20` | if your notes land late, the milliseconds to take off them |
+| `/midi click` | metronome on/off |
+| `/midi off`, `/midi on` | stop / start listening |
+
+`--midi NAME` picks the port for one run.
 
 ## Recording
 
