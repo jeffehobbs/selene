@@ -9,6 +9,16 @@
       "url": "https://github.com/jeffehobbs/selene/releases/download/sounds-rhythm-v1.0.0/selene-rhythm-1.0.0.zip",
       "sha256": "89a50d3285bc662f1b1af89fc225c6694fd41774a4b3004c2ebef45d7fedbeb5",
       "size": 8905617
+    },
+    {
+      "id": "synth",
+      "name": "Selene Synth",
+      "version": "1.0.0",
+      "about": "Modular-style melodic sounds: 8 live synths (bass, acid, lead, pad, drone, pluck, bell, West-coast) and 4 stereo banks (textures, drones, chord stabs, sweeps).",
+      "min_selene": "1.6.0",
+      "url": "https://github.com/jeffehobbs/selene/releases/download/sounds-synth-v1.0.0/selene-synth-1.0.0.zip",
+      "sha256": "a801e3016a8a12d31f8dd45e7948346e9ce764bdc1c1b56229c454e88fa477c2",
+      "size": 32827477
     }
   ]
 }

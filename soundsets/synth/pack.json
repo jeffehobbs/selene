@@ -1,0 +1,26 @@
+{
+  "id": "synth",
+  "name": "Selene Synth",
+  "version": "1.0.0",
+  "license": "CC0-1.0",
+  "min_selene": "1.6.0",
+  "drums": false,
+  "bits": 16,
+  "about": "Modular-style melodic sounds: 8 live synths (bass, acid, lead, pad, drone, pluck, bell, West-coast) and 4 stereo banks (textures, drones, chord stabs, sweeps).",
+  "banks": {
+    "modtex":   {"target_db": -18, "about": "evolving stereo textures, 5-7 s, rooted on C (note transposes); :0 dark and low … :15 bright and glassy"},
+    "moddrone": {"target_db": -15, "about": "stereo drones, 6 s; moddrone:N is on pitch class N (0 C, 1 Db, 2 D, 3 Eb, 4 E, 5 F, 6 Gb, 7 G, 8 Ab, 9 A, 10 Bb, 11 B), so pick the key's root"},
+    "modstab":  {"target_db": -14, "about": "stereo dub chord stabs rooted on C (note transposes): :0-3 minor (m m7 m9 m11), :4-7 major (maj maj7 maj9 6/9), :8-11 open (sus2 sus4 7sus4 quartal), :12-15 tense (7 9 dim7 aug)"},
+    "modsweep": {"target_db": -15, "about": "stereo filter sweeps: :0-7 falls 0.6-2.5 s, :8-15 risers 1-4 s that stop dead at the top (start a riser so it ends on a downbeat)"}
+  },
+  "synths": {
+    "synbass":  {"about": "live bass, a sub sine plus a filtered saw; play it low with # octave 3 (or 4); the note lasts the step, so use legato for longer ones", "knobs": {"voice": "0 pure sub … 1 bright saw", "decay": "filter envelope 0.05-1 s", "drive": "0-1", "slide": "semitones it glides up into the note"}},
+    "synacid":  {"about": "live acid bass, a saw through a resonant ladder filter; play it low with # octave 3 (or 4), in 16ths with legato 0.5-0.9; the note lasts the step", "knobs": {"voice": "0 mellow … 1 squelchy (filter envelope amount)", "decay": "filter envelope 0.05-1 s", "slide": "semitones it glides up into the note (2 is a classic slide)", "drive": "0-1"}},
+    "synlead":  {"about": "live mono lead, two pulse waves with PWM, glide and vibrato; the note lasts the step", "knobs": {"voice": "0 hollow … 1 swirling PWM", "slide": "semitones it glides up into the note", "lfo": "vibrato depth in semitones 0-1", "detune": "0-1", "decay": "filter envelope 0.1-1 s"}},
+    "synpad":   {"about": "live stereo pad of detuned saws, for chords (n \"c'min7\" # octave 4); it swells in over the note, so give it long notes (one chord per cycle, or legato 1-2)", "knobs": {"voice": "0 dark … 1 bright", "decay": "swell (attack) 0.05-3 s", "detune": "0-1 spread", "lfo": "0-1 filter movement"}},
+    "syndrone": {"about": "live stereo drone, three slowly beating oscillators; give it long notes (slow 4, or legato 4)", "knobs": {"voice": "0 pure … 1 buzzy", "decay": "swell 0.5-4 s", "detune": "0-1 beating", "lfo": "0-1 filter movement"}},
+    "synpluck": {"about": "live plucked string (Karplus-Strong); rings for its decay whatever the step, good for arpeggios", "knobs": {"decay": "0.2-6 s", "voice": "0 dark nylon … 1 bright steel"}},
+    "synbell":  {"about": "live FM bell; rings for its decay whatever the step", "knobs": {"decay": "0.3-6 s", "voice": "FM ratio: 0, 0.33, 0.67, 1 sound harmonic and mellow, values between clang (0.47 is a bell)"}},
+    "synlpg":   {"about": "live West-coast voice, a folded sine through a low-pass gate: woody, struck, rings for its decay; good for sequences", "knobs": {"voice": "0 soft … 1 heavily folded", "decay": "0.1-2 s", "drive": "0-1"}}
+  }
+}

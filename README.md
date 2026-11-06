@@ -273,7 +273,27 @@ SuperCollider patch that comes two ways:
   tom, `:6` metal, `:7` zap. Here `n` picks the drum; `note` tunes it.
 
 Live drums ring for their full decay even on fast steps; `# sustain 0.1`
-chokes one. At Flow depth 3 and up, Flow moves the live synths' knobs too.
+chokes one.
+
+**Selene Synth** (33 MB) is modular-style melodic sounds:
+
+- **Live synths** that play in tune at any pitch (`n` or `note`; note 0 is
+  C5, as on every Tidal synth): `synbass` and `synacid` (play them low with
+  `# octave 3`), `synlead`, `synpad` (for chords: `note "c'min9"`),
+  `syndrone`, `synpluck`, `synbell`, and `synlpg`, a West-coast folded sine
+  through a low-pass gate. Besides `voice`, `decay` and `drive` they take
+  `slide` (semitones a note glides up into it), `lfo` (vibrato or filter
+  movement) and `detune`:
+  `n "0 12 3 7*2" # s "synacid" # octave 3 # legato 0.7 # voice (slow 8 $ range 0.2 0.9 saw)`.
+  Bass, acid, lead, pad and drone last the note (the step, `legato` or
+  `sustain`), like `supersaw`; pluck, bell and lpg ring for their decay,
+  like a sample.
+- **Stereo sample banks**: `modtex` (evolving textures, `:0` dark … `:15`
+  glassy), `moddrone` (`moddrone:N` is a drone on pitch class N, so `:7` is
+  G), `modstab` (dub chord stabs on C: `:0–3` minor, `:4–7` major, `:8–11`
+  open, `:12–15` tense) and `modsweep` (`:0–7` falls, `:8–15` risers).
+
+At Flow depth 3 and up, Flow moves the live synths' knobs too.
 It works through inputs of its own, so knob values your code sets stay as
 written. The sounds are CC0. Packs live in `~/.local/share/selene/soundsets`.
 
