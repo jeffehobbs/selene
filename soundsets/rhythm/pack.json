@@ -1,0 +1,36 @@
+{
+  "id": "rhythm",
+  "name": "Selene Rhythm",
+  "version": "1.0.0",
+  "license": "CC0-1.0",
+  "min_selene": "1.6.0",
+  "drums": true,
+  "about": "Modular-style drums: 12 sample banks of 16 variants, 7 live drum synths, and synkit.",
+  "banks": {
+    "modkick":  {"target_db": -8,  "about": "modular kick; :0 short and tight … :15 long and boomy"},
+    "modsnare": {"target_db": -10, "about": "modular snare; :0 tight … :15 loose"},
+    "modhat":   {"target_db": -16, "about": "closed hi-hat, 808-style metal; :0 a tick … :15 longer"},
+    "modohat":  {"target_db": -15, "about": "open hi-hat; :0 short … :15 long wash"},
+    "modclap":  {"target_db": -13, "about": "clap; :0 dry … :15 roomy"},
+    "modtom":   {"target_db": -8,  "about": "tom; :0 low floor tom … :15 high tom, so n picks the pitch for fills"},
+    "modrim":   {"target_db": -13, "about": "rimshot; :0 dark … :15 bright"},
+    "modcow":   {"target_db": -12, "about": "cowbell; :0 short … :15 long"},
+    "modmetal": {"target_db": -14, "about": "FM metal clang; :0 a tick … :15 a long ring"},
+    "modzap":   {"target_db": -11, "about": "laser zap, a sine diving down; :0 a blip … :15 a long laser"},
+    "modperc":  {"target_db": -12, "about": "hand percussion; :0 low … :15 high, even numbers skins, odd numbers woodblocks"},
+    "modnoise": {"target_db": -16, "about": "noise; :0-5 snaps, :6-10 falls, :11-15 risers (a riser lasts 0.5-2 s)"}
+  },
+  "synths": {
+    "synkick":  {"about": "live modular kick", "knobs": {"decay": "0.1-1.5 s", "pitch1": "sweep 1-8", "drive": "0-1", "voice": "0 round … 1 clicky"}},
+    "synsnare": {"about": "live modular snare", "knobs": {"decay": "0.08-0.6 s", "voice": "0 shell … 1 wires", "drive": "0-1"}},
+    "synhat":   {"about": "live hi-hat; decay 0.04 closed, 0.4+ open", "knobs": {"decay": "0.02-1 s", "voice": "0 dark … 1 bright"}},
+    "synclap":  {"about": "live clap", "knobs": {"decay": "0.08-0.8 s", "voice": "0 tight … 1 spread hands"}},
+    "syntom":   {"about": "live tom; tune with n or note", "knobs": {"decay": "0.2-0.8 s", "pitch1": "drop 0-1"}},
+    "synmetal": {"about": "live FM metal clang", "knobs": {"decay": "0.05-2 s", "voice": "0-1 metal ratio"}},
+    "synzap":   {"about": "live laser zap", "knobs": {"decay": "0.05-0.8 s", "pitch1": "octaves of dive 2-7", "voice": "0-1 grit"}}
+  },
+  "kit": {
+    "name": "synkit",
+    "about": "all the live drums under one name: synkit:0 kick, :1 snare, :2 closed hat, :3 open hat, :4 clap, :5 tom, :6 metal, :7 zap; n picks the drum (not the pitch), note tunes it, and the knobs work as on the syn* synths"
+  }
+}
