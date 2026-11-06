@@ -306,3 +306,82 @@ async def test_says_ready_once_superdirt_is_up(monkeypatch):
         await pilot.pause()
         assert readies() == 2
         await app.action_quit()
+
+
+class FakeTake:
+    """video.Take without the screen capture: records what the app asks of it."""
+    made: list["FakeTake"] = []
+
+    def __init__(self, window, mov):
+        self.window, self.mov = window, mov
+        self.launched = self.marked = self.audio_start = None
+        self.events: list[str] = []
+        FakeTake.made.append(self)
+
+    async def start(self):
+        self.launched = time.time()
+        self.events.append("start")
+
+    async def stop(self):
+        self.events.append("stop")
+
+    def discard(self):
+        self.events.append("discard")
+
+    def kill(self):
+        self.events.append("kill")
+
+    async def finish(self, wav, mp4):
+        self.events.append("finish")
+        mp4.write_bytes(b"mp4")
+        return "synced"
+
+
+@needs_ghci
+async def test_video_takes_film_flash_and_finish(tmp_path, fake_dirt, fake_sc, monkeypatch):
+    monkeypatch.setattr(app_module.video, "unavailable", lambda: "video takes need macOS")
+    app = Selene(parse_args(["--boot", str(TEST_BOOT), "--dir", str(tmp_path)]))
+    app.recorder = Recorder(fake_sc.port)
+    async with app.run_test(size=(120, 34)) as pilot:
+        assert await wait_for(lambda: app.state["ghci"] == "ready", 60)
+        app.command("record video on")  # where it can't work, it says why and stays off
+        assert not settings.load()["record_video"]
+
+        monkeypatch.setattr(app_module.video, "unavailable", lambda: None)
+        monkeypatch.setattr(app_module.video, "selene_window", lambda: 4242)
+        monkeypatch.setattr(app_module.video, "Take", FakeTake)
+        FakeTake.made.clear()
+        app.command("record video on")
+        assert settings.load()["record_video"]
+
+        bar = app.query_one("#bar")
+        flashed = []
+        app.command("record")  # nothing playing: films, flashes, then records
+        assert await wait_for(lambda: bar.has_class("sync") and not flashed.append(
+            bar.styles.background), 3)
+        assert flashed[0].rgb == (255, 0, 255)  # the exact colour find_marker looks for
+        assert await wait_for(lambda: app.rec and app.rec["phase"] == "recording", 3)
+        assert not bar.has_class("sync")
+        take = FakeTake.made[-1]
+        assert take.window == 4242 and take.mov.parent == tmp_path and take.mov.name.startswith(".")
+        went = fake_sc.times("go")[0]
+        assert take.launched < take.marked < went  # filming, then the flash, then the sound
+        assert abs(take.audio_start - went) < 0.05
+
+        app.command("record")
+        assert await wait_for(lambda: "finish" in take.events, 3)
+        assert take.events == ["start", "stop", "finish"]
+        assert fake_sc.path.with_suffix(".mp4").exists()
+
+        # Called off while armed (or filming): the capture is thrown away.
+        app.command("record")
+        assert await wait_for(lambda: len(FakeTake.made) == 2, 3)
+        app.command("record")
+        assert await wait_for(lambda: app.rec is None, 3)
+        assert FakeTake.made[-1].events[-1] == "discard" and not bar.has_class("sync")
+
+        # Quitting mid-take never leaves screencapture running.
+        app.command("record")
+        assert await wait_for(lambda: app.rec and app.rec["phase"] == "recording", 3)
+        await app.action_quit()
+    assert FakeTake.made[-1].events[-1] == "discard"

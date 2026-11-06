@@ -125,7 +125,8 @@ In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/cps 0.6`,
 `/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/fade 4 [CYCLES]`,
 `/fade all`, `/stop 4`, `/take 4`, `/prefs`, `/prefer TEXT`, `/flow`, `/split 30` (the log's share of the width; `/split`
 resets), `/save [NAME]`, `/open [NAME]`, `/record`, `/sounds` (see [Soundsets](#soundsets)), `/midi` (see [MIDI keyboard](#midi-keyboard)), `/capture`, `/model [NAME]` (no name: the picker), `/clear` (empties the ghci log), `/quiet` (see below), `/setup` (checks what's installed), `/new`
-are commands (`/record tail N` sets the ring-out, `/record dir PATH` the folder).
+are commands (`/record tail N` sets the ring-out, `/record dir PATH` the folder,
+`/record video on|off` films Selene's window too).
 The split, whether the lanes are showing, the quiet log, the model you last picked, and
 where recordings go and how long they ring out are
 remembered between launches (`~/.local/share/selene/settings.json`). Every
@@ -234,6 +235,18 @@ Takes are saved next to your `.tidal` files (`~/Documents/selene`, or wherever
 you last saved or opened one), named after the open file:
 `dub-2026-10-05-213012.wav`. `/record dir ~/Music/takes` sends them elsewhere;
 `/record dir` alone goes back to the `.tidal` folder.
+
+**Video takes.** `/record video on` makes every take also film Selene's own
+window. After the take, Selene saves an MP4 next to the WAV
+(`dub-2026-10-05-213012.mp4`) with the WAV as its soundtrack, so the sound is
+SuperDirt's clean recording, not the speakers. It's in sync to within a
+frame: as a take arms, the top bar flashes magenta for a moment, and Selene
+finds that flash in the film to line it up with the sound (the flash itself
+is cut). It needs macOS's Terminal app and `ffmpeg` (`brew install ffmpeg`).
+The first take asks for Screen Recording permission for Terminal. Keep
+Selene's window in front while recording; with Stage Manager, a window in
+the side strip films as its thumbnail. `/record video off` goes back to sound
+only.
 
 SuperCollider's own recorder does the writing, which needs a few lines of
 code inside sclang:

@@ -16,8 +16,10 @@ DEFAULT_PATH = Path.home() / ".local/share/selene/settings.json"
 # midi_port "" means: the first keyboard found. midi_sound: what played keys
 # sound like (and what a capture plays). midi_offset: milliseconds the
 # player's keys lag the sound they hear (audio interface latency).
-DEFAULTS = {"split": 50.0, "lanes": True, "record_dir": "", "record_tail": 8.0, "model": "",
-            "quiet": True, "think": False, "midi_port": "", "midi_sound": "supersquare", "midi_offset": 0.0}
+# record_video: takes also film Selene's window into an MP4 (/record video).
+DEFAULTS = {"split": 50.0, "lanes": True, "record_dir": "", "record_tail": 8.0, "record_video": False,
+            "model": "", "quiet": True, "think": False, "midi_port": "", "midi_sound": "supersquare",
+            "midi_offset": 0.0}
 
 
 def path() -> Path:

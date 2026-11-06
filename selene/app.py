@@ -27,7 +27,7 @@ from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import Footer, Input, RichLog, Static, TextArea
 
-from . import blocks, catalog, flow as flowmod, midi, platforms, prereqs, recorder, settings, soundsets
+from . import blocks, catalog, flow as flowmod, midi, platforms, prereqs, recorder, settings, soundsets, video
 from .files import (DEFAULT_DIR, ConfirmScreen, ModelScreen, PathScreen, PrefsScreen, SetupScreen,
                     SoundsScreen,
                     resolve)
@@ -300,6 +300,8 @@ class Selene(App):
     CSS = """
     Screen { layout: vertical; }
     #bar { height: 1; padding: 0 1; background: $panel; }
+    /* A video take's sync flash (video.py): the whole row, one exact colour. */
+    #bar.sync, #bar.sync * { background: #ff00ff; color: #ff00ff; }
     #status, #orbits { width: auto; }
     OrbitChip { width: auto; margin-left: 1; color: $success; background: $success 15%; }
     OrbitChip:hover { background: $success 35%; }
@@ -1292,6 +1294,8 @@ class Selene(App):
             settings.save(record_tail=tail)
             self.log_line(f"takes ring out for up to {tail:g} s" if tail else
                           "takes stop on the beat, no ring-out", "green")
+        elif name == "video":
+            self._record_video_command(rest.strip().lower())
         elif name == "dir":
             settings.save(record_dir=rest.strip())
             self.log_line(f"recordings go to {self._pretty_path(self._record_dir())}"
@@ -1299,7 +1303,24 @@ class Selene(App):
         else:
             self.log_line("/record starts or stops · /record dir PATH sets the folder "
                           "(/record dir alone: next to the .tidal files) · /record tail N: "
-                          "seconds to let it ring out", "yellow")
+                          "seconds to let it ring out · /record video on|off: also film "
+                          "Selene's window into an MP4", "yellow")
+
+    def _record_video_command(self, arg: str) -> None:
+        if arg in ("on", "off"):
+            on = arg == "on"
+            if on and (why := video.unavailable()):
+                self.log_line(f"{why}, so takes stay sound only", "yellow")
+                return
+            settings.save(record_video=on)
+        else:
+            on = settings.load()["record_video"]
+        if on:
+            self.log_line("takes also film Selene's window: an MP4 next to each WAV, in sync. "
+                          "Keep the window in front while recording · /record video off", "green")
+        else:
+            self.log_line("takes are sound only · /record video on films Selene's window too",
+                          "green")
 
     def _record_dir(self) -> Path:
         chosen = settings.load()["record_dir"]
@@ -1344,14 +1365,20 @@ class Selene(App):
         started = False
         try:
             await self.recorder.prepare(path)
+            if settings.load()["record_video"]:
+                await self._video_begin(path)
             boundary = self._next_boundary()
             if boundary:
                 self.log_line(f"◌ recording from cycle {boundary[1]}…", "yellow")
             await self._until(boundary)
+            asked = time.time()
             await self.recorder.go()
             started = True
+            if take := self.rec.get("video"):
+                take.audio_start = (asked + time.time()) / 2  # sclang starts it as the go lands
             self.rec.update(phase="recording", since=time.time())
-            self.log_line(f"● recording to {self._pretty_path(path)}", "red")
+            self.log_line(f"● recording to {self._pretty_path(path)}"
+                          + (" (and filming)" if self.rec.get("video") else ""), "red")
         except RuntimeError as e:
             self.log_line(f"couldn't record: {e}", "red")
         except asyncio.CancelledError:
@@ -1364,8 +1391,37 @@ class Selene(App):
                 except RuntimeError:
                     pass
                 path.unlink(missing_ok=True)
+                if self.rec and (take := self.rec.get("video")):
+                    take.discard()
+                self.query_one("#bar").remove_class("sync")
                 self.rec = None
             self._render_bar()
+
+    async def _video_begin(self, path: Path) -> None:
+        """Start filming Selene's window, then flash the status bar so the video
+        can be lined up with the WAV afterwards (video.py). Any trouble: the
+        take goes ahead as sound only."""
+        if why := video.unavailable():
+            self.log_line(f"{why}; recording sound only", "yellow")
+            return
+        window = await asyncio.to_thread(video.selene_window)
+        if window is None:
+            self.log_line("couldn't find Selene's Terminal window; recording sound only", "yellow")
+            return
+        take = video.Take(window, path.with_name(f".{path.stem}.capture.mov"))
+        try:
+            await take.start()
+        except OSError as e:
+            self.log_line(f"couldn't start filming: {e.strerror or e}; recording sound only", "yellow")
+            return
+        self.rec["video"] = take
+        await asyncio.sleep(video.MARK_AFTER)
+        bar = self.query_one("#bar")
+        bar.add_class("sync")
+        # The flash's time is when Textual has drawn it, not when it was asked for.
+        self.call_after_refresh(lambda: setattr(take, "marked", time.time()))
+        await asyncio.sleep(video.MARK_FOR)
+        bar.remove_class("sync")
 
     @work(group="record-stop")
     async def _record_stop(self) -> None:
@@ -1384,10 +1440,29 @@ class Selene(App):
         except RuntimeError as e:
             self.log_line(f"stopping the recording: {e}", "red")
         secs = int(time.time() - rec["since"])
+        take = rec.get("video")
+        if take:
+            await take.stop()
         self.rec = None
         self.log_line(f"■ saved {self._pretty_path(rec['path'])} "
                       f"({secs // 60}:{secs % 60:02d})", "green")
         self._render_bar()
+        if take:
+            self._video_finish(take, rec["path"])
+
+    @work(group="video")
+    async def _video_finish(self, take: "video.Take", wav: Path) -> None:
+        mp4 = wav.with_suffix(".mp4")
+        self.log_line("◌ making the video…", "yellow")
+        try:
+            note = await take.finish(wav, mp4)
+        except video.VideoError as e:
+            self.log_line(f"no video: {e}", "red")
+            return
+        except asyncio.CancelledError:
+            take.discard()
+            raise
+        self.log_line(f"■ saved {self._pretty_path(mp4)} ({note})", "green")
 
     async def _get_recorder(self) -> bool:
         return await self._get_bridge("Recording", "record", "not recording")
@@ -2130,7 +2205,10 @@ class Selene(App):
     async def _shut_down(self) -> None:
         self.midi.close()
         self.workers.cancel_group(self, "record")
+        self.workers.cancel_group(self, "video")
         if self.rec:  # close the file properly before sclang goes away
+            if take := self.rec.get("video"):
+                take.discard()  # a take cut short by quitting isn't worth a video
             self.rec = None
             try:
                 await self.recorder.stop()
