@@ -74,3 +74,64 @@ def test_level_hits_the_target_unless_the_peak_cap_stops_it():
     spiky = [0.0] * 5000 + [0.9] + [0.0] * 5000 + tone(0.05, amp=0.01)
     out, _ = build.level(spiky, -6)
     assert wav.db(wav.peak(out)) == pytest.approx(build.PEAK_CAP_DB, abs=0.01)
+
+
+def test_stereo_16_bit_round_trip_with_reproducible_dither(tmp_path):
+    left, right = tone(freq=220), tone(freq=330, amp=0.25)
+    wav.write(tmp_path / "s.wav", [left, right], RATE, bits=16)
+    (back_l, back_r), rate = wav.read_channels(tmp_path / "s.wav")
+    assert rate == RATE and len(back_l) == len(left)
+    assert max(abs(a - b) for a, b in zip(left, back_l)) < 2 / 32768  # a step plus dither
+    assert max(abs(a - b) for a, b in zip(right, back_r)) < 2 / 32768
+    wav.write(tmp_path / "copy" / "s.wav", [left, right], RATE, bits=16)
+    assert (tmp_path / "copy" / "s.wav").read_bytes() == (tmp_path / "s.wav").read_bytes()
+
+
+def test_trim_channels_cuts_both_where_the_louder_one_ends():
+    ping = tone(0.3, decay=0.03) + [0.0] * RATE
+    long = tone(0.6, decay=0.1, amp=0.3) + [0.0] * (len(ping) - int(0.6 * RATE))
+    out = wav.trim_channels([ping, long], RATE)
+    assert len(out[0]) == len(out[1]) > len(wav.trim(ping, RATE))
+    assert out[0][-1] == pytest.approx(0, abs=1e-9) and out[1][-1] == pytest.approx(0, abs=1e-9)
+
+
+def test_level_channels_uses_the_mean_power_of_both():
+    out, _ = build.level_channels([tone(amp=0.1), tone(amp=0.1)], -12)
+    assert wav.db(wav.loudness(wav.power_mix(out), RATE)) == pytest.approx(-12, abs=0.05)
+
+
+@pytest.mark.parametrize("freq", [55, 65.41, 261.63, 1000])
+def test_pitch_finds_the_fundamental_not_an_octave_off(freq):
+    rich = [a + 0.6 * b + 0.3 * c for a, b, c in zip(tone(0.1, freq), tone(0.1, 2 * freq), tone(0.1, 3 * freq))]
+    assert wav.pitch(rich, RATE) == pytest.approx(freq, rel=0.005)
+
+
+def test_pitch_is_none_for_noise():
+    import random
+    rng = random.Random(1)
+    assert wav.pitch([rng.uniform(-1, 1) for _ in range(4800)], RATE) is None
+
+
+def test_rms_freq_hears_a_brighter_tone_on_the_same_fundamental():
+    dull = tone(freq=100)
+    bright = [a + 0.5 * b for a, b in zip(tone(freq=100), tone(freq=2000))]
+    assert wav.rms_freq(dull, RATE) == pytest.approx(100, rel=0.01)
+    assert wav.rms_freq(bright, RATE) > 5 * wav.rms_freq(dull, RATE)
+
+
+@pytest.mark.parametrize("pack", ["rhythm", "synth"])
+def test_every_listed_sound_has_a_patch(pack):
+    """pack.json (what the model is told) and patches.scd (what plays) agree:
+    each bank comes from a voice with a vary, each syn* from a live voice."""
+    import json
+    import re
+    src = Path(build.HERE) / pack
+    meta = json.loads((src / "pack.json").read_text())
+    patches = (src / "patches.scd").read_text()
+    blocks = dict(re.findall(r"\n    (\w+): \(\n(.*?)\n    \),", patches, re.S))
+    for bank in meta["banks"]:
+        assert "vary:" in blocks[bank.removeprefix("mod")], bank
+    for synth in meta["synths"]:
+        assert "live: true" in blocks[synth.removeprefix("syn")], synth
+    lives = {name for name, body in blocks.items() if "live: true" in body}
+    assert {f"syn{n}" for n in lives} == set(meta["synths"])

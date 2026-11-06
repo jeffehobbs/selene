@@ -20,13 +20,16 @@ var ringsFor = { |v|
     var d = (v[\defaults] ? ())[\decay] ? 0.5;
     { (((~decay ? d) * (~fdecay ? 1)).clip(0.005, 8) * 1.2) + 0.1 }
 };
+// A gated voice (a bass, a pad) is the opposite: it should last the note,
+// so it keeps SuperDirt's own sustain (the step, or legato/sustain).
 var eventFor = { |name, extra|
     var v = voices[name], synth = ("syn" ++ name).asSymbol;
-    (instrument: synth, unitDuration: ringsFor.(v)).putAll(extra ? ())
+    var event = if(v[\gated] == true) { (instrument: synth) } { (instrument: synth, unitDuration: ringsFor.(v)) };
+    event.putAll(extra ? ())
 };
 if(dirt.isNil) { "selene soundset: no SuperDirt running (~dirt is nil)".warn } {
     voices.keysValuesDo { |name, v|
-        if(v[\live]) {
+        if(v[\live] == true) {
             var synth = ("syn" ++ name).asSymbol;
             SynthDef(synth, {
                 var sig = v[\fn].value * v[\gain];
@@ -45,6 +48,6 @@ if(dirt.isNil) { "selene soundset: no SuperDirt running (~dirt is nil)".warn } {
         };
     };
     "selene soundset: % live synths%".format(
-        voices.count { |v| v[\live] }, if(patches[\kit].notNil) { " + synkit" } { "" }).postln;
+        voices.count { |v| v[\live] == true }, if(patches[\kit].notNil) { " + synkit" } { "" }).postln;
 };
 )
