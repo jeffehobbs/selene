@@ -27,8 +27,9 @@ from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import Footer, Input, RichLog, Static, TextArea
 
-from . import blocks, catalog, midi, platforms, prereqs, recorder, settings
+from . import blocks, catalog, flow as flowmod, midi, platforms, prereqs, recorder, settings, soundsets
 from .files import (DEFAULT_DIR, ConfirmScreen, ModelScreen, PathScreen, PrefsScreen, SetupScreen,
+                    SoundsScreen,
                     resolve)
 from .flow import (DEFAULT_DEPTH, DEPTHS, PHRASE, CtrlSender, FlowDirector, TidalClock,
                    ctrl_name, free_udp_port)
@@ -372,8 +373,13 @@ class Selene(App):
         # The take in progress: phase (armed/recording/stopping), path, since.
         self._rec: dict | None = None
         self.preferences = settings.load_preferences()
+        # Soundsets SuperDirt has loaded this session (only those reach the
+        # model: an installed pack SuperDirt hasn't loaded would be silent).
+        self.sounds_loaded: list[soundsets.Installed] = []
+        self._sounds_unloadable_said = False
+        self._sounds_loading: set[str] = set()  # ids on their way into SuperDirt
         self.system_prompt = self._build_prompt()
-        self.known_sounds = set(catalog.sample_banks()) | set(catalog.synth_names())
+        self.known_sounds = self._known_sounds()
         self.history: list[dict] = []
         self.playing_code = ""  # the current layers: what the editor last played
         # Layers Tidal keeps playing that the current code doesn't mention
@@ -409,6 +415,7 @@ class Selene(App):
         # Tidal's cycle position, from the events it copies to our tap port.
         self.clock = TidalClock()
         self.lane_model = LaneModel(synths=set(catalog.synth_names()))
+        flowmod.use_soundsets(set(), set())
         remembered = settings.load()
         self.lanes_on = bool(remembered["lanes"])
         self.split = float(remembered["split"])  # the log's share of the width, %
@@ -618,7 +625,14 @@ class Selene(App):
         self.action_record()
 
     def _set(self, **kw) -> None:
+        was = self.state.get("dirt")
         self.state.update(kw)
+        if "dirt" in kw and kw["dirt"] != was:
+            if kw["dirt"] == "listening":
+                self.load_soundsets()
+            elif self.sounds_loaded:
+                self.sounds_loaded = []  # a new SuperDirt starts without them
+                self._sounds_changed()
         self._render_bar()
         # "Ready." once SuperDirt and Tidal are both up (usually SuperDirt is
         # last), and again whenever SuperDirt comes back after going away.
@@ -839,10 +853,12 @@ class Selene(App):
             self.action_capture()
         elif name == "record":
             self.record_command(arg.strip())
+        elif name == "sounds":
+            self.action_sounds()
         else:
             self.log_line("commands: /hush /cps N /bpm N /mute N /unmute [N] /solo N "
                           "/prefs /prefer TEXT /fade N|held|all [CYCLES] /stop N|held|all /take N /flow [1-5] /split [N] /save [NAME] /open [NAME] "
-                          "/record [stop|dir PATH] /model [NAME] /midi [on|off|PORT|sound S|offset MS|click] /capture /clear /quiet /think /setup /new", "yellow")
+                          "/record [stop|dir PATH] /sounds /model [NAME] /midi [on|off|PORT|sound S|offset MS|click] /capture /clear /quiet /think /setup /new", "yellow")
 
     def orbit_command(self, name: str, arg: str) -> None:
         orbits = self._all_orbits()
@@ -862,8 +878,25 @@ class Selene(App):
     # ── preferences ───────────────────────────────────────────────────────
 
     def _build_prompt(self) -> str:
-        return build_system_prompt(catalog.sample_banks(), catalog.synth_names(),
-                                   self.preferences)
+        banks = [b for ss in self.sounds_loaded for b in ss.banks]
+        synths = [n for ss in self.sounds_loaded for n in ss.synths]
+        return build_system_prompt(catalog.sample_banks() + banks, catalog.synth_names() + synths,
+                                   self.preferences, soundsets.prompt_section(self.sounds_loaded))
+
+    def _known_sounds(self) -> set[str]:
+        return (set(catalog.sample_banks()) | set(catalog.synth_names())
+                | {n for ss in self.sounds_loaded for n in ss.banks + ss.synths})
+
+    def _sounds_changed(self) -> None:
+        """Loaded soundsets changed: tell the model, the unknown-sound check,
+        the lanes and Flow (which of the new sounds are drums, which are live)."""
+        self.system_prompt = self._build_prompt()
+        self.known_sounds = self._known_sounds()
+        live = {n for ss in self.sounds_loaded for n in ss.synths}
+        self.lane_model.synths = set(catalog.synth_names()) | live
+        drums = {n for ss in self.sounds_loaded if ss.drums for n in ss.banks + ss.synths}
+        flowmod.use_soundsets(drums, live)
+        self._flow_rebase(player=False)  # layers' live/drum flags may have changed
 
     def action_prefs(self) -> None:
         if self._modal():
@@ -1357,14 +1390,19 @@ class Selene(App):
         self._render_bar()
 
     async def _get_recorder(self) -> bool:
-        """Get the recorder into sclang: type it into ours, or (with the
-        player's OK) add it to startup.scd and restart theirs."""
+        return await self._get_bridge("Recording", "record", "not recording")
+
+    async def _get_bridge(self, need: str, then: str, declined: str) -> bool:
+        """Get Selene's OSCdefs (recorder.py: recording and sound loading)
+        into sclang: type them into ours, or (with the player's OK) add them
+        to startup.scd and restart theirs. `need` names what wants them
+        ("Recording"), `then` what follows a start ("record")."""
         status = await asyncio.to_thread(dirt_status)
         if self.dirt.owned:
             await self.dirt.send(recorder.SC_CODE)
         elif status == "off":
             if not await self.push_screen_wait(ConfirmScreen(
-                    "SuperCollider isn't running.\n\nStart it with SuperDirt, then record?",
+                    f"SuperCollider isn't running.\n\nStart it with SuperDirt, then {then}?",
                     "Start", danger=False, cancel="Not now")):
                 return False
             if not await self._boot_dirt():
@@ -1376,21 +1414,21 @@ class Selene(App):
             installed = recorder.installed_version(STARTUP)
             where = self._pretty_path(STARTUP)
             if installed == recorder.VERSION:
-                message = (f"The recorder is in {where}, but SuperCollider was started "
-                           f"before it was added.\n\nRestart SuperCollider to load it? Sound "
+                message = (f"Selene's lines are in {where}, but SuperCollider was started "
+                           f"before they were added.\n\nRestart SuperCollider to load them? Sound "
                            f"stops for a few seconds; if the SuperCollider IDE is running "
                            f"it, the IDE's interpreter stops too.")
                 verb = "Restart"
             else:
-                message = (f"Recording needs a few lines in SuperCollider's startup file, "
+                message = (f"{need} needs a few lines in SuperCollider's startup file, "
                            f"{where}.\n\nSelene will back it up (startup.scd.selene-bak), "
-                           f"{'update' if installed else 'add'} the recorder at the end, and "
+                           f"{'update' if installed else 'add'} its lines at the end, and "
                            f"restart SuperCollider to load it. Sound stops for a few seconds; "
                            f"if the SuperCollider IDE is running it, the IDE's interpreter "
                            f"stops too.")
                 verb = "Update & restart" if installed else "Add & restart"
             if not await self.push_screen_wait(ConfirmScreen(message, verb)):
-                self.log_line("not recording", "yellow")
+                self.log_line(declined, "yellow")
                 return False
             if installed != recorder.VERSION:
                 try:
@@ -1398,7 +1436,7 @@ class Selene(App):
                 except OSError as e:
                     self.log_line(f"couldn't edit {where}: {e.strerror or e}", "red")
                     return False
-                self.log_line(f"added the recorder to {where}"
+                self.log_line(f"added Selene's lines to {where}"
                               + (f" (backup: {backup.name})" if backup else ""), "green")
             self.log_line("restarting SuperCollider…", "yellow")
             self._set(dirt="booting")
@@ -1413,8 +1451,137 @@ class Selene(App):
             pong = await self.recorder.ping(0.5)
             if pong and pong.version >= recorder.VERSION:
                 return True
-        self.log_line("SuperCollider didn't pick up the recorder", "red")
+        self.log_line("SuperCollider didn't pick up Selene's lines", "red")
         return False
+
+    # ── soundsets ─────────────────────────────────────────────────────────
+
+    @work(group="sounds-load", exclusive=True)
+    async def load_soundsets(self) -> None:
+        """SuperDirt is (back) up: load every installed pack it doesn't have."""
+        have = {(x.id, x.version) for x in self.sounds_loaded}
+        todo = [ss for ss in soundsets.installed()
+                if (ss.id, ss.version) not in have and ss.id not in self._sounds_loading]
+        if not todo:
+            return
+        ids = {ss.id for ss in todo}
+        self._sounds_loading |= ids  # claimed: an install in flight won't load them too
+        try:
+            if not await self._bridge_ready():
+                if not self._sounds_unloadable_said:
+                    self._sounds_unloadable_said = True
+                    self.log_line(f"{', '.join(ss.name for ss in todo)} installed, but this "
+                                  f"SuperCollider can't load sound packs yet: /sounds sets "
+                                  f"that up", "yellow")
+                return
+            await self._load_into_dirt(todo)
+        finally:
+            self._sounds_loading -= ids
+
+    async def _bridge_ready(self) -> bool:
+        """Are Selene's OSCdefs (v2: sound loading) answering? Our own sclang
+        gets them typed in, so it only needs a moment."""
+        if self.dirt.owned:
+            await self.dirt.send(recorder.SC_CODE)
+        for _ in range(8 if self.dirt.owned else 2):
+            pong = await self.recorder.ping(0.5)
+            if pong and pong.version >= recorder.VERSION:
+                return True
+        return False
+
+    async def _load_into_dirt(self, sets: list[soundsets.Installed]) -> None:
+        loaded = []
+        for ss in sets:
+            self.log_line(f"loading {ss.name} into SuperDirt…", "dim")
+            try:
+                await self.recorder.load_sounds(ss.id)
+            except RuntimeError as e:
+                self.log_line(f"couldn't load {ss.name}: {e}", "red")
+                continue
+            loaded.append(ss)
+        if loaded:
+            ids = {ss.id for ss in loaded}
+            self.sounds_loaded = [x for x in self.sounds_loaded if x.id not in ids] + loaded
+            self._sounds_changed()
+            for ss in loaded:
+                self.log_line(f"♫ {ss.name} {ss.version}: {ss.summary()}", "green")
+
+    @work(group="sounds", exclusive=True)
+    async def action_sounds(self) -> None:
+        if self._modal():
+            return
+        note = ""
+        try:
+            available = await soundsets.fetch_index()
+        except soundsets.SoundsetError as e:
+            available, note = [], str(e)  # still list what's installed
+        have = soundsets.installed()
+        if self._modal():  # something else opened while we asked
+            return
+        rows = soundsets.rows(available, have, soundsets.selene_version())
+        choice = await self.push_screen_wait(SoundsScreen(rows, note))
+        if not choice:
+            return
+        action, sid = choice
+        if action == "install":
+            item = next((a for a in available if a.id == sid), None)
+            if item:
+                await self._install_soundset(item)
+        elif action == "remove":
+            ss = next((i for i in have if i.id == sid), None)
+            if ss:
+                await self._remove_soundset(ss)
+
+    async def _install_soundset(self, item: soundsets.Available) -> None:
+        self.log_line(f"downloading {item.name} {item.version} ({item.size / 1e6:.1f} MB)…", "dim")
+        shown = [0.0]
+
+        def progress(done: int, total: int) -> None:
+            if total and done / total - shown[0] >= 0.25:
+                shown[0] = done / total
+                self.log_line(f"  {done / total:.0%}", "dim")
+
+        try:
+            ss = await soundsets.install(item, progress=progress)
+        except soundsets.SoundsetError as e:
+            self.log_line(f"couldn't install {item.name}: {e}", "red")
+            return
+        self.log_line(f"installed {ss.name} {ss.version} in {self._pretty_path(ss.path)}", "green")
+        # Playable now: whatever SuperDirt's state, get it (and Selene's lines in
+        # sclang) up, offering to start or restart it as recording does. The
+        # claim keeps load_soundsets (which a fresh SuperDirt sets off) from
+        # loading it a second time; declined, it loads when SuperDirt starts.
+        if ss.id in self._sounds_loading:
+            return  # SuperDirt's start-up is loading it already
+        self._sounds_loading.add(ss.id)
+        try:
+            ready = (self.state["dirt"] == "listening" and await self._bridge_ready()) or \
+                await self._get_bridge("Loading sound packs", "load the sounds",
+                                       f"{ss.name} isn't loaded yet: it loads when SuperDirt starts")
+            if ready and all(x.id != ss.id or x.version != ss.version for x in self.sounds_loaded):
+                await self._load_into_dirt([ss])
+        finally:
+            self._sounds_loading.discard(ss.id)
+
+    async def _remove_soundset(self, ss: soundsets.Installed) -> None:
+        if not await self.push_screen_wait(ConfirmScreen(
+                f"Remove {ss.name} {ss.version}?\n\nIts files are deleted from "
+                f"{self._pretty_path(ss.path)}, and SuperDirt forgets its sounds: layers "
+                f"that play them go quiet.", "Remove")):
+            return
+        if any(x.id == ss.id for x in self.sounds_loaded):
+            try:
+                await self.recorder.unload_sounds(ss.banks + ss.synths)
+            except RuntimeError:
+                pass  # SuperDirt went away; it starts without them anyway
+            self.sounds_loaded = [x for x in self.sounds_loaded if x.id != ss.id]
+            self._sounds_changed()
+        try:
+            soundsets.remove(ss.id)
+        except (OSError, soundsets.SoundsetError) as e:
+            self.log_line(f"couldn't remove {ss.name}: {e}", "red")
+            return
+        self.log_line(f"removed {ss.name}", "magenta")
 
     # ── generate / evaluate ───────────────────────────────────────────────
 

@@ -18,3 +18,7 @@ seleneTap = [(superdirtTarget {oName = "selene", oPort = seleneTapPort, oBusPort
 tidalInst <- mkTidalWith ((superdirtTarget { oPort = 57999 }, [superdirtShape]) : seleneTap) (defaultConfig {cCtrlPort = seleneCtrlPort})
 
 instance Tidally where tidal = tidalInst
+
+-- Selene soundsets: the live synths' saturation knob (voice, decay and
+-- pitch1 are Tidal's own). Flow's fvoice/fdecay/fdrive go out as pF directly.
+drive = pF "drive"

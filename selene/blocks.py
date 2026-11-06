@@ -122,8 +122,9 @@ def flowify(code: str) -> str:
     """Route every `dN $ ...` through Flow's per-orbit controls (see flow.py).
 
     At their defaults the controls are inaudible: rate 1, rot 0, ply 1, rev
-    off, degradeBy 0, gain x1, djf 0.5, room +0, and color that only fills in
-    shape/crush/delay the model didn't set (`|<` keeps the model's values).
+    off, degradeBy 0, gain x1, djf 0.5, room +0, color that only fills in
+    shape/crush/delay the model didn't set (`|<` keeps the model's values),
+    and live-synth knob offsets of 0 (fdecay x1) that samples ignore.
     The closing paren goes on its own line so an inline comment in the
     model's code can't swallow it.
     """
@@ -143,7 +144,10 @@ def flowify(code: str) -> str:
             f" # djf (cF 0.5 {c('tone')}) |+ room (cF 0 {c('space')})"
             f" |< shape (cF 0 {c('drive')}) |< crush (cF 16 {c('crush')})"
             f" |< delay (cF 0 {c('send')}) |+ delay (cF 0 {c('throw')})"
-            f" |< delaytime (cF 0.375 \"fl_dtime\") |< delayfeedback 0.45")
+            f" |< delaytime (cF 0.375 \"fl_dtime\") |< delayfeedback 0.45"
+            # Live soundset synths' knobs, through Flow's own inputs.
+            f" |< pF \"fvoice\" (cF 0 {c('fvoice')}) |< pF \"fdecay\" (cF 1 {c('fdecay')})"
+            f" |< pF \"fdrive\" (cF 0 {c('fdrive')})")
     return "\n".join(out)
 
 

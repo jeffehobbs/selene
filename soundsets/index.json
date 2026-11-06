@@ -1,0 +1,14 @@
+{
+  "soundsets": [
+    {
+      "id": "rhythm",
+      "name": "Selene Rhythm",
+      "version": "1.0.0",
+      "about": "Modular-style drums: 12 sample banks of 16 variants, 7 live drum synths, and synkit.",
+      "min_selene": "1.6.0",
+      "url": "https://github.com/jeffehobbs/selene/releases/download/sounds-rhythm-v1.0.0/selene-rhythm-1.0.0.zip",
+      "sha256": "89a50d3285bc662f1b1af89fc225c6694fd41774a4b3004c2ebef45d7fedbeb5",
+      "size": 8905617
+    }
+  ]
+}

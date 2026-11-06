@@ -38,7 +38,7 @@ class TidalTree(DirectoryTree):
 
 
 DIALOG_CSS = """
-PathScreen, ConfirmScreen, PrefsScreen, ModelScreen, SetupScreen { align: center middle; }
+PathScreen, ConfirmScreen, PrefsScreen, ModelScreen, SetupScreen, SoundsScreen { align: center middle; }
 #dialog { width: 72; height: auto; max-height: 80%; padding: 1 2;
           border: round $accent; background: $surface; }
 #dialog TidalTree { height: 16; margin-top: 1; }
@@ -285,6 +285,87 @@ class ModelScreen(ModalScreen[str | None]):
     @on(OptionList.OptionSelected)
     def picked(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(event.option.id)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+def sound_row(row: dict, width: int) -> Text:
+    """One pack in the /sounds list: name, then what Enter would do."""
+    text = Text(row["name"].ljust(width + 3))
+    styles = {"installed": "green", "update": "yellow", "available": "", "newer selene": "red"}
+    text.append(row["status"], style=styles.get(row["kind"], "dim"))
+    if row.get("size"):
+        text.append(f"  {row['size'] / 1e6:.1f} MB", style="dim")
+    return text
+
+
+class SoundsScreen(ModalScreen[tuple[str, str] | None]):
+    """Selene's soundsets: Enter installs or updates the highlighted pack.
+    Remove sits apart at the far end and the app confirms it.
+    Returns ("install" | "remove", id), or None."""
+
+    DEFAULT_CSS = DIALOG_CSS + """
+    SoundsScreen #dialog { width: 80; }
+    SoundsScreen OptionList, SoundsScreen OptionList:focus {
+        height: auto; max-height: 16; border: none; padding: 0; background: $surface; }
+    """
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, rows: list[dict], note: str = ""):
+        super().__init__()
+        self.rows = rows  # id, name, status, kind, about, size, installed, can_install
+        self.note = note
+
+    def compose(self) -> ComposeResult:
+        width = max((len(r["name"]) for r in self.rows), default=0)
+        with Vertical(id="dialog") as dialog:
+            dialog.border_title = "sounds"
+            if self.note:
+                yield Static(self.note, classes="note")
+            if not self.rows:
+                yield Static("No soundsets to show.")
+                return
+            yield OptionList(*(Option(sound_row(r, width), id=r["id"]) for r in self.rows),
+                             id="packs")
+            with Horizontal():
+                yield Button("Install", variant="primary", id="install")
+                yield Static(classes="spacer")
+                yield Button("Remove", variant="error", id="remove")
+
+    def on_mount(self) -> None:
+        if self.rows:
+            options = self.query_one("#packs", OptionList)
+            options.highlighted = 0
+            options.focus()
+            self._show(self.rows[0])
+
+    def _row(self, option_id: str | None) -> dict | None:
+        return next((r for r in self.rows if r["id"] == option_id), None)
+
+    def _show(self, row: dict) -> None:
+        self.query_one("#packs", OptionList).tooltip = row["about"] or None
+        install = self.query_one("#install", Button)
+        install.label = {"update": "Update", "installed": "Reinstall"}.get(row["kind"], "Install")
+        install.disabled = not row["can_install"]
+        self.query_one("#remove", Button).disabled = not row["installed"]
+
+    @on(OptionList.OptionHighlighted)
+    def highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        if row := self._row(event.option.id):
+            self._show(row)
+
+    @on(OptionList.OptionSelected)
+    def picked(self, event: OptionList.OptionSelected) -> None:
+        row = self._row(event.option.id)
+        if row and row["can_install"]:
+            self.dismiss(("install", row["id"]))
+
+    @on(Button.Pressed)
+    def pressed(self, event: Button.Pressed) -> None:
+        options = self.query_one("#packs", OptionList)
+        option = options.get_option_at_index(options.highlighted or 0)
+        self.dismiss((event.button.id, option.id))
 
     def action_cancel(self) -> None:
         self.dismiss(None)

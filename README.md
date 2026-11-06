@@ -124,7 +124,7 @@ keyboard) can't be typed in selene.
 In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/cps 0.6`,
 `/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/fade 4 [CYCLES]`,
 `/fade all`, `/stop 4`, `/take 4`, `/prefs`, `/prefer TEXT`, `/flow`, `/split 30` (the log's share of the width; `/split`
-resets), `/save [NAME]`, `/open [NAME]`, `/record`, `/midi` (see [MIDI keyboard](#midi-keyboard)), `/capture`, `/model [NAME]` (no name: the picker), `/clear` (empties the ghci log), `/quiet` (see below), `/setup` (checks what's installed), `/new`
+resets), `/save [NAME]`, `/open [NAME]`, `/record`, `/sounds` (see [Soundsets](#soundsets)), `/midi` (see [MIDI keyboard](#midi-keyboard)), `/capture`, `/model [NAME]` (no name: the picker), `/clear` (empties the ghci log), `/quiet` (see below), `/setup` (checks what's installed), `/new`
 are commands (`/record tail N` sets the ring-out, `/record dir PATH` the folder).
 The split, whether the lanes are showing, the quiet log, the model you last picked, and
 where recordings go and how long they ring out are
@@ -243,10 +243,43 @@ code inside sclang:
 - **If SuperCollider was already running**, the first `ctrl+g` asks to add them
   to your `startup.scd`. Selene backs it up as `startup.scd.selene-bak` and
   adds a marked block at the end (`// >>> selene recorder` … `// <<< selene
-  recorder`; delete it to remove the recorder). It then restarts that
+  recorder`; delete it to remove the recorder). The same block also loads
+  [soundsets](#soundsets), so whichever of the two you set up first covers both. It then restarts that
   SuperCollider so the code loads, and starts recording. Sound drops for a
   few seconds, and if the SuperCollider IDE was running it, the IDE's
   interpreter stops.
+
+## Soundsets
+
+`/sounds` lists Selene's sound packs and installs them from inside the app:
+Enter installs (or updates) the highlighted pack, and Remove deletes one
+after asking. A pack loads into SuperDirt right away, with no restart, and
+again every time SuperDirt starts. The model is told what each new sound is
+and which knobs it takes.
+
+**Selene Rhythm** (8.9 MB) is modular-style drums. Each sound is one
+SuperCollider patch that comes two ways:
+
+- **`mod*` sample banks**: `modkick modsnare modhat modohat modclap modtom
+  modrim modcow modmetal modzap modperc modnoise`, 16 variants each, ordered
+  so the number means something (`modkick:0` is short and tight, `modkick:15`
+  long and boomy; `modtom:0` is a floor tom, `:15` a high tom).
+- **`syn*` live synths**: `synkick synsnare synhat synclap syntom synmetal
+  synzap`, synthesized on every hit, so their knobs can change per event:
+  `voice` (0–1 timbre), `decay` (seconds), `drive` (0–1) and `pitch1`, with `n`
+  or `note` for tuning. `s "synkick*4" # decay "<0.3 1.2>" # drive 0.4`.
+- **`synkit`**: all the live drums under one name, like a sample bank:
+  `synkit:0` kick, `:1` snare, `:2` closed hat, `:3` open hat, `:4` clap, `:5`
+  tom, `:6` metal, `:7` zap. Here `n` picks the drum; `note` tunes it.
+
+Live drums ring for their full decay even on fast steps; `# sustain 0.1`
+chokes one. At Flow depth 3 and up, Flow moves the live synths' knobs too.
+It works through inputs of its own, so knob values your code sets stay as
+written. The sounds are CC0. Packs live in `~/.local/share/selene/soundsets`.
+
+If SuperCollider was already running when Selene started, loading packs
+needs the same few lines in `startup.scd` as recording (see
+[Recording](#recording)). The first install asks.
 
 ## Flow
 
@@ -260,7 +293,7 @@ how active it is (and starts it):
 |---|---|
 | 1 | slow drift: each layer's level, tone, space and density slide over 20–90 s; nothing announces itself |
 | 2 | the same, faster and wider |
-| **3** (default) | + **color** (drive, bitcrush, delay send) and **rhythm mutations**: a layer rotates, stutters, goes half- or double-time or reverses for a phrase or two, landing on a 4-cycle boundary |
+| **3** (default) | + **color** (drive, bitcrush, delay send; on layers playing a [soundset](#soundsets) live synth, its timbre, decay and saturation too) and **rhythm mutations**: a layer rotates, stutters, goes half- or double-time or reverses for a phrase or two, landing on a 4-cycle boundary |
 | 4 | + **arrangement events** on the beat: drops (all but one layer fall out for a phrase, then slam back), fills, rolls, dub delay throws; the model's rewrites get bolder |
 | 5 | everything faster, wider, more often |
 

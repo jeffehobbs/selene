@@ -7,7 +7,8 @@ live-coding set wants the music to *move*:
 
   1  slow drift: level, tone, space, density (the original Flow)
   2  faster, wider drift
-  3  + color (drive, crush, delay send) and rhythm mutations (rotate, stutter,
+  3  + color (drive, crush, delay send), the knobs of live soundset synths
+       (timbre, decay, saturation), and rhythm mutations (rotate, stutter,
        half/double time, reverse) that land on phrase boundaries
   4  + arrangement events (drops, fills, rolls, delay throws) and bolder
        rewrites from the model
@@ -55,9 +56,16 @@ CONTINUOUS = {
     "drive": (0.0, (0.0, 0.35), (0.0, 0.6)),
     "crush": (16.0, (7.0, 16.0), (4.0, 16.0)),
     "send": (0.0, (0.0, 0.3), (0.0, 0.55)),
+    # Live soundset synths' knobs, through Flow's own inputs (fvoice is added
+    # to voice, fdecay multiplies decay, fdrive is added to drive), so the
+    # values the code wrote stay as written. Other layers ignore them.
+    "fvoice": (0.0, (-0.15, 0.15), (-0.45, 0.45)),
+    "fdecay": (1.0, (0.8, 1.25), (0.45, 2.0)),
+    "fdrive": (0.0, (0.0, 0.2), (0.0, 0.5)),
 }
 DRIFTED = ("gain", "tone", "space")
 COLOR = ("drive", "crush", "send")
+KNOBS = ("fvoice", "fdecay", "fdrive")  # color too, but only on live-synth layers
 # Stepped controls change only on cycle boundaries: name -> neutral.
 STEPPED = {"rate": 1.0, "rot": 0.0, "ply": 1.0, "rev": 0.0, "gate": 1.0, "throw": 0.0}
 NEUTRAL = {c: spec[0] for c, spec in CONTINUOUS.items()} | STEPPED
@@ -168,6 +176,8 @@ DRIFT_WORDS = {
     "gain": ("louder", "quieter"), "tone": ("brighter", "darker"),
     "space": ("wetter", "drier"), "drive": ("grittier", "cleaner"),
     "crush": ("smoother", "crunchier"), "send": ("more echo", "less echo"),
+    "fvoice": ("opens up", "closes in"), "fdecay": ("rings longer", "tightens"),
+    "fdrive": ("saturates", "cleans up"),
 }
 
 
@@ -182,6 +192,7 @@ class Orbit:
     rest_until_cycle: float = -1  # and the layer is heard as written until then
     register: int = 0  # -1 low, 0 mid, +1 high
     drums: bool = False  # exempt from the density budget
+    live: bool = False  # plays a soundset's live synth: its knobs can move
     retiring: bool = False
 
 
@@ -236,8 +247,9 @@ class FlowDirector:
                 del self.orbits[orbit]
         for orbit, stmt in code_orbits.items():
             if orbit not in self.orbits:
-                o = Orbit(register=register_of(stmt), drums=is_drums(stmt))
-                for c in DRIFTED + COLOR + ("mutate",):
+                o = Orbit(register=register_of(stmt), drums=is_drums(stmt),
+                          live=plays_live_synth(stmt))
+                for c in DRIFTED + COLOR + KNOBS + ("mutate",):
                     o.due[c] = now + self._jitter(self.rng.choice(PRIMES[:5]))
                 self.orbits[orbit] = o
             else:
@@ -249,6 +261,11 @@ class FlowDirector:
                     if o.values["thin"] or "thin" in o.ramps:
                         self._ramp(orbit, "thin", 0.0, now, self.depth.ramp[0])
                 o.drums = is_drums(stmt)
+                was_live, o.live = o.live, plays_live_synth(stmt)
+                if was_live and not o.live:  # its knobs go home
+                    for c in KNOBS:
+                        if o.values[c] != CONTINUOUS[c][0] or c in o.ramps:
+                            self._ramp(orbit, c, CONTINUOUS[c][0], now, self.depth.ramp[0])
         if player:
             self.evolve_due = max(self.evolve_due, now + self.depth.yield_seconds)
         return resets
@@ -273,12 +290,12 @@ class FlowDirector:
         for g in self.event_due:
             self.event_due[g] = min(self.event_due[g], now + self._jitter(EVENT_PERIODS[g] * self.depth.gap))
         for o in self.orbits.values():
-            for c in DRIFTED + COLOR + ("mutate",):
+            for c in DRIFTED + COLOR + KNOBS + ("mutate",):
                 o.due[c] = min(o.due.get(c, now), now + self._jitter(5))
         steps = []
         if not self.depth.color:
             for orbit in self.orbits:
-                for c in COLOR:
+                for c in COLOR + KNOBS:
                     self._ramp(orbit, c, CONTINUOUS[c][0], now, self.depth.ramp[0])
         if not (self.depth.rhythm and self.depth.events):
             steps = self._steps_home(cycle)
@@ -351,7 +368,7 @@ class FlowDirector:
             layers = sorted(self.orbits, key=lambda o: (self.orbits[o].drums, self.rng.random()))
             for i, orbit in enumerate(layers):
                 o = self.orbits[orbit]
-                for c in COLOR + ("mutate",):
+                for c in COLOR + KNOBS + ("mutate",):
                     o.due[c] = max(o.due.get(c, now), now + self._jitter(STAGGER * (i + 1)))
             for g in self.event_due:
                 self.event_due[g] = max(self.event_due[g],
@@ -393,13 +410,13 @@ class FlowDirector:
     drift_events: list  # filled by _drift, handed out by tick
 
     def _drift(self, now: float) -> None:
-        """Each orbit's level/tone/space (and color, at depth 3+) breathe on
-        their own prime clocks."""
+        """Each orbit's level/tone/space (and color, at depth 3+, plus the
+        knobs of a live soundset synth) breathe on their own prime clocks."""
         controls = DRIFTED + (COLOR if self.depth.color else ())
         for orbit, o in self.orbits.items():
             if not self._free(orbit):
                 continue
-            for c in controls:
+            for c in controls + (KNOBS if self.depth.color and o.live else ()):
                 if now < o.due.get(c, 0) or c in o.ramps:
                     continue
                 neutral = CONTINUOUS[c][0]
@@ -710,10 +727,27 @@ class FlowDirector:
         return self._jitter(self.rng.choice(DEPTHS[self.depth_level].evolve_minutes) * 60)
 
 
+# Filled from the installed soundsets (use_soundsets): their drum sounds, and
+# the live synths whose knobs Flow can move.
+SOUNDSET_DRUMS: set[str] = set()
+LIVE_SYNTHS: set[str] = set()
+
+
+def use_soundsets(drums, live) -> None:
+    SOUNDSET_DRUMS.clear()
+    SOUNDSET_DRUMS.update(drums)
+    LIVE_SYNTHS.clear()
+    LIVE_SYNTHS.update(live)
+
+
 def is_drums(stmt: str) -> bool:
     """Does this layer play a drum kit (or drum synth)?"""
-    return any(name in DRUM_SOUNDS or name.startswith(("808", "909"))
+    return any(name in DRUM_SOUNDS or name in SOUNDSET_DRUMS or name.startswith(("808", "909"))
                for name in sound_names(stmt))
+
+
+def plays_live_synth(stmt: str) -> bool:
+    return any(name in LIVE_SYNTHS for name in sound_names(stmt))
 
 
 def register_of(stmt: str) -> int:

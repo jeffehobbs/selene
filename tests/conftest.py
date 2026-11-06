@@ -132,3 +132,15 @@ def no_midi_ports(monkeypatch):
     """Tests never connect to the player's MIDI keyboard."""
     from selene.midi import MidiInput
     monkeypatch.setattr(MidiInput, "available", staticmethod(lambda: []))
+
+
+@pytest.fixture(autouse=True)
+def private_soundsets(tmp_path, monkeypatch):
+    """Tests never see (or load into SuperDirt) the player's installed packs,
+    and never fetch the real index. Returns the empty soundsets folder."""
+    from selene import flow, soundsets
+    root = tmp_path / "soundsets"
+    monkeypatch.setattr(soundsets, "ROOT", root)
+    monkeypatch.setattr(soundsets, "INDEX_URL", "http://127.0.0.1:9/index.json")
+    yield root
+    flow.use_soundsets(set(), set())  # module state: the next test starts clean

@@ -1,8 +1,9 @@
-"""Record what SuperCollider plays to a WAV file.
+"""Record what SuperCollider plays to a WAV file, and load sound packs.
 
-sclang won't run code sent over OSC, so the recorder is a few OSCdefs that
-have to live in sclang already. When selene started sclang itself it types
-them in; otherwise they go in the player's startup.scd (with their OK).
+sclang won't run code sent over OSC, so these are a few OSCdefs that have to
+live in sclang already (the "recorder" block, though since v2 it also loads
+Selene's soundsets). When selene started sclang itself it types them in;
+otherwise they go in the player's startup.scd (with their OK).
 """
 
 import asyncio
@@ -12,13 +13,14 @@ from pathlib import Path
 
 from .superdirt import DIRT_PORT
 
-VERSION = 1
+VERSION = 2
 BEGIN = "// >>> selene recorder"
 END = "// <<< selene recorder"
 
 # Messages to and from sclang, all on its language port (SuperDirt's 57120).
 # Replies go back to whoever asked.
-SC_CODE = f"""{BEGIN} v{VERSION}: lets selene record to WAV (/record). Added by selene;
+SC_CODE = f"""{BEGIN} v{VERSION}: lets selene record to WAV (/record) and load its
+// soundsets (/sounds). Added by selene;
 // delete everything down to the end marker to remove it.
 (
 // Reports the output level while a stop waits for the sound to ring out.
@@ -74,6 +76,36 @@ OSCdef(\\seleneRecStop, {{ |msg, time, addr|
         }}, '/selene/rec/level', s.addr);
     }};
 }}, '/selene/rec/stop');
+// Soundsets: /load ID loads ~/.local/share/selene/soundsets/ID (its samples
+// and synths.scd) into SuperDirt. It takes an id, never a path, so nothing
+// else on this machine can make sclang run a file of its choosing.
+OSCdef(\\seleneSoundsLoad, {{ |msg, time, addr|
+    var id = msg[1].asString, dirt = ~dirt ? SuperDirt.default;
+    var dir = "~/.local/share/selene/soundsets".standardizePath +/+ id;
+    case
+    {{ id.isEmpty or: {{ id.any {{ |c| (c.isAlphaNum or: {{ c == $- }}).not }} }} }} {{
+        addr.sendMsg('/selene/sounds/error', id, "not a soundset id") }}
+    {{ File.exists(dir +/+ "manifest.json").not }} {{
+        addr.sendMsg('/selene/sounds/error', id, "not installed") }}
+    {{ dirt.isNil }} {{ addr.sendMsg('/selene/sounds/error', id, "SuperDirt isn't running") }}
+    {{
+        fork {{
+            if(File.exists(dir +/+ "samples")) {{ dirt.loadSoundFiles(dir +/+ "samples/*") }};
+            dirt.server.sync;
+            if(File.exists(dir +/+ "synths.scd")) {{ (dir +/+ "synths.scd").load }};
+            dirt.server.sync;
+            addr.sendMsg('/selene/sounds/loaded', id);
+        }}
+    }};
+}}, '/selene/sounds/load');
+// /unload NAME…: forget these banks and synths (a removed soundset).
+OSCdef(\\seleneSoundsUnload, {{ |msg, time, addr|
+    var dirt = ~dirt ? SuperDirt.default, names = msg[1..].collect(_.asSymbol);
+    dirt !? {{ dirt.soundLibrary.freeSoundFiles(names); dirt.soundLibrary.freeSynths(names) }};
+    // Or SuperDirt would still find the bare SynthDef by name and play it.
+    names.do {{ |n| SynthDescLib.global.removeAt(n) }};
+    addr.sendMsg('/selene/sounds/unloaded', names.size);
+}}, '/selene/sounds/unload');
 );
 {END}
 """
@@ -172,6 +204,8 @@ class Recorder:
                         return reply
                     if addr == "/selene/rec/error":
                         raise RuntimeError(reply[0] if reply else "recorder error")
+                    if addr == "/selene/sounds/error":
+                        raise RuntimeError(reply[-1] if reply else "soundset error")
         except TimeoutError:
             raise RuntimeError("SuperCollider didn't answer") from None
 
@@ -193,6 +227,16 @@ class Recorder:
         """Stop, after letting the sound ring out for up to `tail` seconds."""
         await self._ask("/selene/rec/stop", float(tail), expect="/selene/rec/stopped",
                         timeout=tail + 3)
+
+    async def load_sounds(self, soundset_id: str, timeout: float = 60) -> None:
+        """Load an installed soundset into SuperDirt (samples, then synths).
+        A big pack can take a while: sclang reads every file."""
+        await self._ask("/selene/sounds/load", soundset_id, expect="/selene/sounds/loaded",
+                        timeout=timeout)
+
+    async def unload_sounds(self, names: list[str]) -> None:
+        await self._ask("/selene/sounds/unload", *names, expect="/selene/sounds/unloaded",
+                        timeout=5)
 
     def close(self) -> None:
         if self.transport:

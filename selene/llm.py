@@ -37,7 +37,7 @@ hpf, resonance, delay, delaytime, delayfeedback, crush, coarse, shape, \
 vowel "a", squiz, accelerate, begin, end, legato, sustain, attack, release.
 - Continuous modulation: `# lpf (range 300 3000 $ slow 4 sine)`.
 - Keep gain at or below 1.1; keep `room`/`size` at or below 0.9.
-- Never use `djf` (reserved). Use lpf/hpf for filtering.
+- Never use `djf`, `fvoice`, `fdecay` or `fdrive` (reserved). Use lpf/hpf for filtering.
 
 Common mistakes that GHCi rejects:
 - Transformations (every, sometimes, jux, fast, slow, off, whenmod, degradeBy, \
@@ -78,10 +78,13 @@ SuperDirt synths: {synths}
 """
 
 
-def build_system_prompt(samples: list[str], synths: list[str], preferences: str = "") -> str:
+def build_system_prompt(samples: list[str], synths: list[str], preferences: str = "",
+                        soundsets: str = "") -> str:
     # str.replace, not format: the mini-notation examples contain braces.
     prompt = (SYSTEM_PROMPT.replace("{samples}", " ".join(samples))
               .replace("{synths}", " ".join(synths)))
+    if soundsets.strip():  # what the installed packs' sounds are (soundsets.prompt_section)
+        prompt += "\n" + soundsets.strip() + "\n"
     if preferences.strip():
         # Last, so they win over the defaults above.
         prompt += ("\nThe player's preferences (follow these unless a request says "
