@@ -17,7 +17,7 @@ def test_settings_roundtrip_and_defaults(private_settings):
     settings.save(split=31.5)
     settings.save(lanes=False)
     assert json.loads(private_settings.read_text()) == {"split": 31.5, "lanes": False, "record_dir": "",
-                                                            "record_tail": 8.0, "model": "", "quiet": True,
+                                                            "record_tail": 8.0, "model": "", "quiet": True, "think": False,
                                                             "midi_port": "", "midi_sound": "supersquare",
                                                             "midi_offset": 0.0}
     private_settings.write_text("not json")

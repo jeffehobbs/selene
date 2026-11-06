@@ -207,17 +207,21 @@ class Ollama:
                 return name
         raise LookupError(f"model {self.model!r} not installed; have: {', '.join(installed) or 'none'}")
 
-    async def chat(self, messages: list[dict], _retry: bool = True) -> AsyncIterator[str]:
+    async def chat(self, messages: list[dict], _retry: bool = True,
+                   thoughts=None) -> AsyncIterator[str]:
+        """Stream the reply's text. With `thoughts` (a callable), the model also
+        reasons first and each piece of that reasoning goes to it; otherwise
+        thinking is off, to skip the delay."""
         body = {"model": self.model, "messages": messages, "stream": True,
                 "options": {"temperature": 0.8}}
         if self._think_supported:
-            body["think"] = False  # code only; skip hidden reasoning tokens
+            body["think"] = thoughts is not None
         async with self.client.stream("POST", f"{self.url}/api/chat", json=body) as r:
             if r.status_code == 400 and self._think_supported:
                 text = (await r.aread()).decode(errors="replace")
                 if "think" in text:
                     self._think_supported = False
-                    async for chunk in self.chat(messages):
+                    async for chunk in self.chat(messages, thoughts=thoughts):
                         yield chunk
                     return
                 raise RuntimeError(text)
@@ -227,7 +231,7 @@ class Ollama:
                     # The resolved tag was removed (e.g. a re-pull); match again.
                     self.model = self.requested
                     await self.resolve_model()
-                    async for chunk in self.chat(messages, _retry=False):
+                    async for chunk in self.chat(messages, _retry=False, thoughts=thoughts):
                         yield chunk
                     return
                 raise RuntimeError(text)
@@ -237,7 +241,10 @@ class Ollama:
                 data = json.loads(line)
                 if "error" in data:
                     raise RuntimeError(data["error"])
-                if chunk := data.get("message", {}).get("content"):
+                message = data.get("message", {})
+                if thoughts is not None and (thought := message.get("thinking")):
+                    thoughts(thought)
+                if chunk := message.get("content"):
                     yield chunk
 
     async def close(self) -> None:

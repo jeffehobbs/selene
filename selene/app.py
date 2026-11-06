@@ -309,6 +309,9 @@ class Selene(App):
     OrbitChip.held.hit { background: $warning 45%; }
     OrbitChip.fading { text-style: italic dim; }
     #main { height: 1fr; }
+    #thoughts { display: none; height: auto; max-height: 7; padding: 0 2; color: $text-muted;
+                text-style: italic; border-left: thick $accent 40%; }
+    #thoughts.on { display: block; }
     #code { width: 1fr; border: round $primary 50%; }
     #code, #log { border-title-color: $text-muted; }
     #code.playing { border: round $success; }
@@ -412,6 +415,10 @@ class Selene(App):
         # Quiet log: GHCi's and SuperCollider's routine output is kept but not
         # shown; green and red lines still are. /quiet redraws with or without it.
         self.quiet = bool(remembered["quiet"])
+        # Think mode: the model's reasoning streams into a strip above the editor
+        # while a prompt is interpreted, then goes away. Flow rewrites never think.
+        self.think = bool(remembered["think"])
+        self.thought = ""
         self.log_entries: deque[tuple[Text, bool]] = deque(maxlen=LOG_LINES)  # (line, chatter)
         self.tap_port = free_udp_port()
         # Pulsar-style event highlighting, if the boot file sends positions.
@@ -429,6 +436,7 @@ class Selene(App):
             yield Static(id="status")
             yield Horizontal(id="orbits")
         yield Lanes(self.lane_model, self.clock, OrbitChip, id="lanes")
+        yield Static(id="thoughts")
         with Horizontal(id="main"):
             yield RichLog(id="log", wrap=True, markup=True, max_lines=LOG_LINES)
             yield Divider(id="divider")
@@ -633,6 +641,30 @@ class Selene(App):
             return
         log.write(line)
 
+    def set_think(self, think: bool) -> None:
+        self.think = think
+        settings.save(think=think)
+        self.log_line("think on: you'll see the model's reasoning while it writes (/think stops it; "
+                      "prompts take longer)" if think else "think off", "dim")
+
+    def _show_thought(self, chunk: str) -> None:
+        """Stream the model's reasoning into the strip above the editor, showing
+        its last few lines."""
+        self.thought += chunk
+        strip = self.query_one("#thoughts", Static)
+        lines = [ln.strip() for ln in self.thought.splitlines() if ln.strip()]
+        strip.update(Text("\n".join(lines[-6:])))
+        strip.add_class("on")
+
+    def _clear_thought(self) -> None:
+        self.thought = ""
+        try:
+            strip = self.query_one("#thoughts", Static)
+        except NoMatches:
+            return
+        strip.remove_class("on")
+        strip.update("")
+
     def set_quiet(self, quiet: bool) -> None:
         self.quiet = quiet
         settings.save(quiet=quiet)
@@ -797,6 +829,8 @@ class Selene(App):
             self.log_entries.clear()
         elif name == "quiet":
             self.set_quiet(not self.quiet)
+        elif name == "think":
+            self.set_think(not self.think)
         elif name == "setup":
             self.setup_command()
         elif name == "midi":
@@ -808,7 +842,7 @@ class Selene(App):
         else:
             self.log_line("commands: /hush /cps N /bpm N /mute N /unmute [N] /solo N "
                           "/prefs /prefer TEXT /fade N|held|all [CYCLES] /stop N|held|all /take N /flow [1-5] /split [N] /save [NAME] /open [NAME] "
-                          "/record [stop|dir PATH] /model [NAME] /midi [on|off|PORT|sound S|offset MS|click] /capture /clear /quiet /setup /new", "yellow")
+                          "/record [stop|dir PATH] /model [NAME] /midi [on|off|PORT|sound S|offset MS|click] /capture /clear /quiet /think /setup /new", "yellow")
 
     def orbit_command(self, name: str, arg: str) -> None:
         orbits = self._all_orbits()
@@ -1505,19 +1539,26 @@ class Selene(App):
         for attempt in range(self.args.fix_attempts + 1):
             self._set(llm="thinking…" if attempt == 0 else f"fixing ({attempt})…")
             self._code_state("busy")
+            self._clear_thought()
             reply = ""
             draft = Draft(editor)
             try:
-                async for chunk in self.ollama.chat(messages):
+                chat = (self.ollama.chat(messages, thoughts=self._show_thought) if self.think
+                        else self.ollama.chat(messages))
+                async for chunk in chat:
+                    if self.thought:
+                        self._clear_thought()  # the code has started; the reasoning is done
                     reply += chunk
                     draft.add(chunk)
                     self.model_text = editor.text
             except Exception as e:  # noqa: BLE001 - network/model errors go to the log
+                self._clear_thought()
                 self.log_line(f"ollama: {e}", "red")
                 draft.close()
                 self._set(llm="")
                 self._code_state("failed")
                 return
+            self._clear_thought()
             code = blocks.extract_code(reply)
             draft.close(code)
             self.model_text = code
