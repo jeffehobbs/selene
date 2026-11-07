@@ -99,6 +99,7 @@ Or install it as a command: `uv tool install git+https://github.com/jeffehobbs/s
 | `ctrl+r` | regenerate the last prompt |
 | `ctrl+n` | new context: next prompt ignores what's playing |
 | `ctrl+f` | Flow on / off (`/flow 1`–`/flow 5` sets how active) |
+| `ctrl+p` | pause / resume: silences the music and holds your place, give or take a few cycles (also `/pause`, `/resume`) |
 | `ctrl+s` | save the editor to a `.tidal` file (asks for a name the first time) |
 | `ctrl+o` | open a `.tidal` file into the editor (doesn't play it until `ctrl+e`) |
 | `ctrl+l` | lanes on / off |
@@ -121,7 +122,7 @@ whether or not "Use Option as Meta key" is on. The catch is that the
 characters option+digit normally types (`¡ ™ £ ¢ ∞ § ¶ • ª º` on a US
 keyboard) can't be typed in selene.
 
-In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/cps 0.6`,
+In the prompt, `!` sends raw Tidal (`!d3 $ s "cp*4"`), and `/hush`, `/pause`, `/resume`, `/cps 0.6`,
 `/bpm 128`, `/mute 2`, `/unmute` (all), `/solo 1`, `/fade 4 [CYCLES]`,
 `/fade all`, `/stop 4`, `/take 4`, `/prefs`, `/prefer TEXT`, `/flow`, `/split 30` (the log's share of the width; `/split`
 resets), `/save [NAME]`, `/open [NAME]`, `/record`, `/sounds` (see [Soundsets](#soundsets)), `/midi` (see [MIDI keyboard](#midi-keyboard)), `/capture`, `/model [NAME]` (no name: the picker), `/clear` (empties the ghci log), `/quiet` (see below), `/setup` (checks what's installed), `/new`

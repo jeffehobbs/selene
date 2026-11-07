@@ -775,8 +775,23 @@ class TidalClock:
     def __init__(self):
         self.anchor: tuple[float, float, float] | None = None  # (time, cycle, cps)
         self.aheads: list[float] = []
+        self.paused = False
+
+    def pause(self, now: float) -> None:
+        """Freeze the cycle where it is: Tidal is muted and crawling, so no events come
+        to re-anchor us (the ones already on their way are ignored)."""
+        if self.anchor and not self.paused:
+            self.anchor = (now, self.cycle_at(now), 0.0)
+        self.paused = True
+
+    def resume(self, now: float, cps: float) -> None:
+        if self.anchor and self.paused:
+            self.anchor = (now, self.anchor[1], cps)
+        self.paused = False
 
     def observe(self, received: float, timetag: float, cycle: float, cps: float) -> None:
+        if self.paused:
+            return
         self.anchor = (timetag, cycle, cps)
         self.aheads = (self.aheads + [timetag - received])[-64:]
 

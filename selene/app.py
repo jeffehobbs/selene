@@ -33,7 +33,7 @@ from .files import (DEFAULT_DIR, ConfirmScreen, ModelScreen, PathScreen, PrefsSc
                     resolve)
 from .flow import (DEFAULT_DEPTH, DEPTHS, PHRASE, CtrlSender, FlowDirector, TidalClock,
                    ctrl_name, free_udp_port)
-from .ghci import BUNDLED_BOOT, Ghci
+from .ghci import BUNDLED_BOOT, EvalResult, Ghci
 from .highlight import ADDRESS as HIGHLIGHTS, Highlighter, place
 from .lanes import LaneModel, Lanes
 from .llm import (Ollama, build_system_prompt, evolve_message, fix_message,
@@ -340,6 +340,8 @@ class Selene(App):
         Binding("ctrl+r", "retry", "Retry", priority=True),
         Binding("ctrl+n", "new_session", "New", priority=True),
         Binding("ctrl+f", "flow", "Flow", priority=True),
+        Binding("ctrl+p", "pause", "Pause", priority=True),
+        Binding("ctrl+p", "resume", "Resume", priority=True),
         Binding("ctrl+s", "save", "Save", priority=True),
         Binding("ctrl+o", "open", "Open", priority=True),
         Binding("ctrl+l", "lanes", "Lanes", priority=True),
@@ -394,6 +396,11 @@ class Selene(App):
         self.last_known: dict[str, float] = {}  # orbit -> when selene last tracked it
         self._known_prev: set[str] = set()
         self.muted: set[str] = set()
+        # Pause: Tidal is muted and crawling (see _freeze). The tempo to
+        # restore on resume, and when we paused (Flow's clock stands still too).
+        self.paused_cps: float | None = None
+        self.paused_since = 0.0
+        self.paused_total = 0.0
         self.last_prompt = ""
         self.fresh = False  # next prompt ignores what's playing
         # Whatever the model last wrote into the editor (streaming, failed, or
@@ -496,6 +503,8 @@ class Selene(App):
             bar.append(self.midi.name, style="bold" if hit else "")
             if self.midi_click:
                 bar.append(" · click", style="dim")
+        if self.paused_cps is not None:
+            bar.append("   ⏸ paused", style="bold yellow")
         if s["flow"]:
             bar.append(f"   ☯{self.flow_depth} {s['flow']}", style="magenta")
         if self.rec:
@@ -615,6 +624,10 @@ class Selene(App):
     def check_action(self, action: str, parameters) -> bool | None:
         if action == "capture":  # only with a keyboard (/capture explains otherwise)
             return bool(self.midi.name)
+        if action == "pause":
+            return self.paused_cps is None
+        if action == "resume":
+            return self.paused_cps is not None
         if action == "record":
             return self._rec is None
         if action == "stop_record":
@@ -812,6 +825,10 @@ class Selene(App):
         name, _, arg = cmd.partition(" ")
         if name == "hush":
             self.action_hush()
+        elif name == "pause":
+            self.action_pause()
+        elif name == "resume":
+            self.action_resume()
         elif name == "cps" and arg:
             self.evaluate(f"setcps ({arg})", source="raw")
         elif name == "bpm" and arg:
@@ -1189,6 +1206,64 @@ class Selene(App):
     def _modal(self) -> bool:
         return len(self.screen_stack) > 1
 
+    def action_pause(self) -> None:
+        """Silence the music and slow Tidal's clock to a crawl, so resume picks
+        up close to where it left off. Flow and the lanes stand still."""
+        if self._modal() or self.paused_cps is not None:
+            return
+        if self.state["ghci"] != "ready":
+            self.log_line("nothing to pause yet: GHCi isn't ready", "yellow")
+            return
+        if self._rec is not None and self._rec["phase"] != "stopping":
+            self.log_line("stop recording before pausing (ctrl+g)", "yellow")
+            return
+        self.paused_cps = self.clock.cps or 0.5625  # Tidal's default until it has played
+        self.paused_since = time.monotonic()
+        self.clock.pause(time.time())
+        for handle in self.flow_pending:  # stepped Flow sends are for a moment that's frozen
+            handle.cancel()
+        self.flow_pending.clear()
+        self._freeze(True)
+
+    def action_resume(self) -> None:
+        if self._modal() or self.paused_cps is None:
+            return
+        self._freeze(False)
+
+    @work(group="pause")
+    async def _freeze(self, pausing: bool) -> None:
+        cps = self.paused_cps
+        # Tidal runs on Ableton Link, which won't go below 20 bpm: `setcps 0`
+        # only slows the clock to a crawl (1/12 speed), so everything is muted too.
+        if pausing:
+            code = "setcps 0\n" + "\n".join(f"mute {n}" for n in range(1, PAUSE_ORBITS + 1))
+        else:
+            code = f"setcps ({cps!r})\nunmuteAll\n" + "\n".join(
+                f"mute {o[1:]}" for o in sorted(self.muted))
+        result = await self.ghci.eval(code)
+        if not result.ok:
+            self.log_line("couldn't " + ("pause" if pausing else "resume"), "red")
+            if pausing:
+                self._clear_pause()
+            return
+        if not pausing:
+            self._clear_pause()
+        self.log_line("⏸ paused · ctrl+p to resume" if pausing else "▶ resumed", "magenta")
+        self._render_bar()
+
+    def _clear_pause(self) -> None:
+        if self.paused_cps is not None:
+            self.clock.resume(time.time(), self.paused_cps)
+            self.paused_total += time.monotonic() - self.paused_since
+        self.paused_cps = None
+
+    async def _unfreeze(self) -> None:
+        """Put the tempo back without a word (hush). The hush before it
+        already cleared the mutes."""
+        if self.paused_cps is not None:
+            await self.ghci.eval(f"setcps ({self.paused_cps!r})")
+            self._clear_pause()
+
     def action_hush(self) -> None:
         if self._modal():  # esc in a dialog closes it; it must not hush the music
             self.screen.action_cancel()
@@ -1204,6 +1279,7 @@ class Selene(App):
             # Everything is about to be silent, so no glide: straight to neutral.
             self._flow_stop(log=False)
         await self.ghci.hush()
+        await self._unfreeze()  # a hush ends a pause: the next pattern must sound
         self.marks.clear()
         self.playing_code = ""
         self.held.clear()
@@ -1351,6 +1427,9 @@ class Selene(App):
 
     @work(group="record", exclusive=True)
     async def _record_start(self) -> None:
+        if self.paused_cps is not None:
+            self.log_line("resume before recording (ctrl+p)", "yellow")
+            return
         pong = await self.recorder.ping()
         if (pong is None or pong.version < recorder.VERSION) and not await self._get_recorder():
             return
@@ -1714,6 +1793,20 @@ class Selene(App):
         """Send code to GHCi, wrapped for Flow (or by `wrap`), with its
         pattern strings marked for event highlighting when the boot file
         supports it."""
+        if self.paused_cps is not None:  # tempo changes wait for the resume
+            kept = []
+            for stmt in blocks.split_statements(code):
+                if stmt.startswith("setcps"):
+                    if (cps := parse_cps(stmt)) is not None:
+                        self.paused_cps = cps
+                    else:
+                        self.log_line("can't tell that tempo while paused; keeping the old one",
+                                      "yellow")
+                else:
+                    kept.append(stmt)
+            if not kept:
+                return EvalResult(True)
+            code = "\n".join(kept)
         wrap = wrap or self._wrap
         plain = wrap(code)
         if not self.highlighting:
@@ -1847,7 +1940,9 @@ class Selene(App):
         return text != self.playing_code.strip() and text != self.model_text.strip()
 
     def _flow_now(self) -> float:
-        return (time.monotonic() - self.flow_t0) * FLOW_SPEED
+        # Flow's time stands still while paused, and doesn't count the pause.
+        now = self.paused_since if self.paused_cps is not None else time.monotonic()
+        return (now - self.flow_t0 - self.paused_total) * FLOW_SPEED
 
     def _playing_statements(self) -> dict[str, str]:
         out = {}
@@ -1982,7 +2077,7 @@ class Selene(App):
             self.log_line("☯ flow stopped", "magenta")
 
     def _flow_tick(self) -> None:
-        if not self.flow:
+        if not self.flow or self.paused_cps is not None:
             return
         self._update_dtime()
         updates, steps, events = self.flow.tick(self._flow_now(), self._cycle())
@@ -2394,6 +2489,22 @@ class Selene(App):
         # However the app ends (ctrl+q, ctrl+c, a crash, a test), never leave
         # Tidal playing on its own. Each step is a no-op if already done.
         await self._shut_down()
+
+
+PAUSE_ORBITS = 12  # SuperDirt's default number of orbits
+
+
+def parse_cps(stmt: str) -> float | None:
+    """The number in `setcps 0.5` or `setcps (120/60/4)`; None for anything
+    fancier (it's only arithmetic, so evaluating it is safe)."""
+    expr = stmt[len("setcps"):].strip()
+    if not expr or not re.fullmatch(r"[\d.\s()/*+-]+", expr):
+        return None
+    try:
+        value = float(eval(expr, {"__builtins__": {}}))  # noqa: S307
+    except (SyntaxError, ArithmeticError, ValueError, TypeError):
+        return None
+    return value if value > 0 else None
 
 
 def merge_layers(playing: str, raw: str) -> str:
