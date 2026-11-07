@@ -96,6 +96,11 @@ class Ghci:
                 return EvalResult(False, output)
         return EvalResult(True, output)
 
+    async def define(self, code: str, timeout: float = 30) -> EvalResult:
+        """Run definitions (signatures with their bindings) as one :{ :} block,
+        which eval's statement splitting would pull apart."""
+        return await self._run([":{", code.rstrip("\n"), ":}"], timeout)
+
     async def hush(self) -> EvalResult:
         # Tidal keeps mute flags through hush; clear them so the next
         # pattern on a muted orbit isn't silently dropped.

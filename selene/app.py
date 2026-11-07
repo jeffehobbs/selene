@@ -27,7 +27,7 @@ from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import Footer, Input, RichLog, Static, TextArea
 
-from . import blocks, catalog, flow as flowmod, midi, platforms, prereqs, recorder, settings, soundsets, video
+from . import blocks, catalog, flow as flowmod, midi, platforms, prereqs, recorder, settings, soundsets, tuning, video
 from .files import (DEFAULT_DIR, ConfirmScreen, ModelScreen, PathScreen, PrefsScreen, SetupScreen,
                     SoundsScreen,
                     resolve)
@@ -377,6 +377,12 @@ class Selene(App):
         # The take in progress: phase (armed/recording/stopping), path, since.
         self._rec: dict | None = None
         self.preferences = settings.load_preferences()
+        # Microtonal mode (/tuning): 12 is off, and off it touches nothing.
+        # The GHCi helpers go in the first time it's turned on; after it's
+        # turned off, the model is told once to bring edo layers back to 12.
+        self.tuning = getattr(args, "tuning", tuning.OFF)
+        self.tuning_defined = False
+        self.tuning_back = False
         # Soundsets SuperDirt has loaded this session (only those reach the
         # model: an installed pack SuperDirt hasn't loaded would be silent).
         self.sounds_loaded: list[soundsets.Installed] = []
@@ -505,6 +511,8 @@ class Selene(App):
                 bar.append(" · click", style="dim")
         if self.paused_cps is not None:
             bar.append("   ⏸ paused", style="bold yellow")
+        if self.tuning != tuning.OFF:
+            bar.append(f"   {self.tuning}-EDO", style="bold cyan")
         if s["flow"]:
             bar.append(f"   ☯{self.flow_depth} {s['flow']}", style="magenta")
         if self.rec:
@@ -774,6 +782,10 @@ class Selene(App):
         self._set(ghci="ready" if result.ok else "dead")
         if not result.ok:
             self.log_line("GHCi failed to boot Tidal:\n" + result.error_text, "red")
+        elif self.tuning != tuning.OFF and not await self._define_tuning():
+            self.tuning = tuning.OFF  # without the helpers the model's code can't run
+            self.system_prompt = self._build_prompt()
+            self._render_bar()
         return result
 
     async def _needs(self) -> list[prereqs.Need]:
@@ -841,6 +853,8 @@ class Selene(App):
             self.held_command(name, arg.strip())
         elif name == "flow":
             self.flow_command(arg.strip())
+        elif name == "tuning":
+            self.tuning_command(arg.strip())
         elif name == "prefs":
             self.action_prefs()
         elif name == "prefer":
@@ -899,8 +913,10 @@ class Selene(App):
     def _build_prompt(self) -> str:
         banks = [b for ss in self.sounds_loaded for b in ss.banks]
         synths = [n for ss in self.sounds_loaded for n in ss.synths]
-        return build_system_prompt(catalog.sample_banks() + banks, catalog.synth_names() + synths,
-                                   self.preferences, soundsets.prompt_section(self.sounds_loaded))
+        return build_system_prompt(
+            catalog.sample_banks() + banks, catalog.synth_names() + synths, self.preferences,
+            soundsets.prompt_section(self.sounds_loaded),
+            tuning.prompt_section(self.tuning) if self.tuning != tuning.OFF else "")
 
     def _known_sounds(self) -> set[str]:
         return (set(catalog.sample_banks()) | set(catalog.synth_names())
@@ -1865,8 +1881,11 @@ class Selene(App):
         self.fresh = False
         messages = [{"role": "system", "content": self.system_prompt}]
         messages += [{"role": m["role"], "content": m["content"]} for m in self.history]
-        messages.append({"role": "user", "content": user_message(prompt, context, edits,
-                                                                 held=self._held_code())})
+        ask = user_message(prompt, context, edits, held=self._held_code())
+        if self.tuning_back:  # microtonal mode was just turned off
+            ask = f"{tuning.back_to_12()}\n\n{ask}"
+            self.tuning_back = False
+        messages.append({"role": "user", "content": ask})
         if edits:
             self.log_line("(building on your unplayed edits)", "dim cyan")
         self.log_line(f"» {prompt}", "bold cyan")
@@ -1903,6 +1922,12 @@ class Selene(App):
                 self.log_line(f"not installed: {', '.join(sorted(unknown))}; asking for a fix",
                               "yellow")
                 messages.append({"role": "user", "content": unknown_sounds_message(unknown)})
+                continue
+            bad = tuning.unknown_scales(code)
+            if bad and attempt < self.args.fix_attempts:
+                self.log_line(f"no such EDO scale: {', '.join(sorted(bad))}; asking for a fix",
+                              "yellow")
+                messages.append({"role": "user", "content": tuning.unknown_scales_message(bad)})
                 continue
             self._set(llm="evaluating…")
             self._claim(code)
@@ -2159,6 +2184,8 @@ class Selene(App):
             elif unknown := blocks.sound_names(stmt) - self.known_sounds:
                 problem = (f"Not installed: {', '.join(sorted(unknown))}. "
                            "Use only sounds from the lists.")
+            elif bad := tuning.unknown_scales(stmt):
+                problem = tuning.unknown_scales_message(bad)
             elif keep_scales and blocks.scales(stmt) - keep_scales:
                 problem = (f"Keep the key: use only these scales: {', '.join(sorted(keep_scales))}.")
             if problem:
@@ -2192,6 +2219,51 @@ class Selene(App):
                 self.log_line(f"☯ {what}", "magenta")
             self.flow.evolved(orbit, kind, ok, self._flow_now())
             self._set(flow="flow" if self.flow_on else "easing out")
+
+    # ── microtonal mode ───────────────────────────────────────────────────
+
+    def tuning_command(self, arg: str) -> None:
+        """/tuning 19|24|31 turns microtonal mode on; /tuning off (or 12) ends it."""
+        k = tuning.parse(arg) if arg else None
+        if k is None:
+            now = f"{self.tuning}-EDO" if self.tuning != tuning.OFF else "off (12-EDO)"
+            self.log_line(f"tuning: {now} · /tuning {'|'.join(map(str, tuning.EDOS))} "
+                          "for microtonal mode, /tuning off to end it", "yellow")
+        elif k == self.tuning:
+            self.log_line(f"already in {k}-EDO" if k != tuning.OFF else "tuning is already off",
+                          "dim")
+        else:
+            self.set_tuning(k)
+
+    @work(group="tuning", exclusive=True)
+    async def set_tuning(self, k: int, why: str = "") -> None:
+        if k != tuning.OFF and self.state["ghci"] == "ready" and not await self._define_tuning():
+            return  # it said why; the mode stays as it was
+        was, self.tuning = self.tuning, k
+        if k == tuning.OFF:
+            self.tuning_back = tuning.uses_edo(self.playing_code)
+            self.log_line("microtonal mode off · back to 12-EDO from the next prompt", "cyan")
+        else:
+            self.tuning_back = False
+            later = "" if self.state["ghci"] == "ready" else " (helpers load when GHCi is ready)"
+            self.log_line(f"{why + ' · ' if why else ''}microtonal mode: {k}-EDO from the next "
+                          f"prompt · edo {k} \"steps\", escale {k} \"name\" \"degrees\" · "
+                          f"scales: {', '.join(tuning.SCALES[k])}{later}", "cyan")
+        if was != k:
+            self.system_prompt = self._build_prompt()
+        self._render_bar()
+
+    async def _define_tuning(self) -> bool:
+        """Put edo / escale into GHCi, once a session."""
+        if self.tuning_defined:
+            return True
+        result = await self.ghci.define(tuning.helpers())
+        if not result.ok:
+            self.log_line("couldn't define the microtonal helpers in GHCi:\n"
+                          + result.error_text, "red")
+            return False
+        self.tuning_defined = True
+        return True
 
     # ── files ─────────────────────────────────────────────────────────────
 
@@ -2240,9 +2312,12 @@ class Selene(App):
 
     def _write(self, path: Path) -> None:
         text = self.query_one("#code", TextArea).text
+        # Microtonal code says so on its first line; /open turns the mode back on.
+        edo = tuning.edo_of(text)
+        head = tuning.header(edo) + "\n" if edo else ""
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text.rstrip("\n") + "\n")
+            path.write_text(head + text.rstrip("\n") + "\n")
         except OSError as e:
             self.log_line(f"couldn't save {path}: {e.strerror or e}", "red")
             return
@@ -2275,6 +2350,10 @@ class Selene(App):
         except (OSError, UnicodeDecodeError) as e:
             self.log_line(f"couldn't open {path}: {e}", "red")
             return
+        edo, text = tuning.split_header(text)
+        edo = edo or tuning.edo_of(text)  # e.g. a session log's day file
+        if edo is not None and edo != self.tuning:
+            self.set_tuning(edo, why=f"{path.name} is in {edo}-EDO")
         self.current_file, self.saved_text, self.file_dir = path, text, path.parent
         self.query_one("#code", TextArea).text = text
         self._code_state(None)
@@ -2289,6 +2368,8 @@ class Selene(App):
             return str(path)
 
     def _save(self, code: str, label: str) -> None:
+        if edo := tuning.edo_of(code):
+            label += f"  [tuning {edo}]"
         with self.session_file.open("a") as f:
             f.write(f"-- {datetime.now():%H:%M:%S}  {label}\n{code}\n\n")
 
@@ -2549,6 +2630,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--midi", metavar="PORT",
                    help="MIDI input to listen to, or part of its name (default: the last one "
                         "chosen with /midi, else the first keyboard found)")
+    p.add_argument("--tuning", type=int, choices=tuning.EDOS, default=tuning.OFF,
+                   help="start in microtonal mode: N equal steps per octave (off by default; "
+                        "/tuning N or /tuning off during a session)")
     p.add_argument("--fix-attempts", type=int, default=2,
                    help="times to feed GHCi errors back to the model (default: 2)")
     return p.parse_args(argv)

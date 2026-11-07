@@ -79,12 +79,14 @@ SuperDirt synths: {synths}
 
 
 def build_system_prompt(samples: list[str], synths: list[str], preferences: str = "",
-                        soundsets: str = "") -> str:
+                        soundsets: str = "", tuning: str = "") -> str:
     # str.replace, not format: the mini-notation examples contain braces.
     prompt = (SYSTEM_PROMPT.replace("{samples}", " ".join(samples))
               .replace("{synths}", " ".join(synths)))
     if soundsets.strip():  # what the installed packs' sounds are (soundsets.prompt_section)
         prompt += "\n" + soundsets.strip() + "\n"
+    if tuning.strip():  # microtonal mode only (tuning.prompt_section); off, nothing
+        prompt += "\n" + tuning.strip() + "\n"
     if preferences.strip():
         # Last, so they win over the defaults above.
         prompt += ("\nThe player's preferences (follow these unless a request says "

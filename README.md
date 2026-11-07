@@ -364,6 +364,57 @@ that selene drives over Tidal's `/ctrl` OSC port, so nothing is re-evaluated
 to make the music move. A custom `--boot` file needs the `SELENE_CTRL_PORT`
 and `SELENE_TAP_PORT` lines from the bundled `BootTidal.hs` for Flow to work.
 
+## Microtonal mode
+
+An advanced, opt-in mode for music outside 12-tone equal temperament. It's off
+unless you turn it on, and while it's off selene behaves exactly as it always
+has: the model isn't told about it and nothing extra is loaded into GHCi.
+
+`/tuning 19`, `/tuning 24` or `/tuning 31` puts the session in that EDO (equal
+divisions of the octave) from the next prompt, and `/tuning off` goes back to
+12 (the model is asked to bring pitched layers back to 12-EDO on the next
+prompt). The top bar shows `31-EDO` while it's on. It lasts until you quit;
+`--tuning 31` starts a session in it.
+
+Turning it on defines two helpers in GHCi, and the model writes with them:
+
+```haskell
+d2 $ edo 31 "0 5 10 13"                           -- 31-EDO steps, in place of note
+d3 $ edo 31 (escale 31 "mohajira" "0 [2 4] <5 3>")  # s "superpiano"
+```
+
+Octaves are `|+ note 12` or `# octave 4`; transpose by steps with
+`|+ "<0 5>"` inside `edo`. The scales are:
+
+| EDO | scales |
+|---|---|
+| 19 | major, minor, dorian, pentatonic |
+| 24 | major, minor, rast, bayati, saba, sikah, hijaz |
+| 31 | major, minor, mohajira, septimal, orwell, pentatonic |
+
+A name not in that list is sent back to the model to fix, the way a missing
+sound is. In the lanes, a note more than 15 cents from a 12-EDO key is
+underlined. Files saved in the mode start with `-- selene: tuning 31`, and
+opening one turns the mode back on. To play them outside selene, put this in
+your own `BootTidal.hs` (the 31-EDO table shown; selene's own is in
+`selene/tuning.py`):
+
+```haskell
+:{
+seleneEdoScales :: [((Int, String), [Int])]
+seleneEdoScales = [((31, "major"), [0, 5, 10, 13, 18, 23, 28]), ((31, "mohajira"), [0, 4, 9, 13, 18, 22, 27])]
+edo :: Note -> Pattern Note -> ControlPattern
+edo k p = note (fmap (* (12 / k)) p) # pF "edo" (pure (realToFrac k))
+escale :: Int -> Pattern String -> Pattern Int -> Pattern Note
+escale k sp p = innerJoin $ (\name -> step (maybe [0 .. k - 1] id (lookup (k, name) seleneEdoScales)) <$> p) <$> sp
+  where step s i = fromIntegral (s !! (i `mod` length s) + k * (i `div` length s))
+:}
+```
+
+Pitch only bends where the sound follows `note`: SuperDirt's synths, the
+Selene Synth live synths and samples repitched with `note`. The MIDI keyboard
+still plays and captures in 12-EDO.
+
 ## Options
 
 ```
@@ -375,6 +426,7 @@ and `SELENE_TAP_PORT` lines from the bundled `BootTidal.hs` for Flow to work.
 --superdirt         boot SuperCollider + SuperDirt if it isn't running (default: ask)
 --dir FOLDER        where .tidal files are saved/opened (default: ~/Documents/selene)
 --flow-depth N      how active Flow is when turned on, 1–5 (default: 3)
+--tuning N          start in microtonal mode, 19, 24 or 31 (default: off)
 --fix-attempts N    times to feed errors back to the model (default: 2)
 ```
 

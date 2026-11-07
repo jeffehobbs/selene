@@ -164,10 +164,11 @@ def as_xfade(stmt: str, cycles: int = 16) -> str:
 
 
 SCALE = re.compile(r'\bscale\s+"([^"]+)"')
+ESCALE = re.compile(r'\bescale\s+(\d+)\s+"([^"]+)"')  # microtonal mode's (tuning.py)
 
 
 def scales(code: str) -> set[str]:
-    return set(SCALE.findall(code))
+    return set(SCALE.findall(code)) | {f"{k}-EDO {name}" for k, name in ESCALE.findall(code)}
 
 
 def statement_for(code: str, orbit: str) -> str | None:

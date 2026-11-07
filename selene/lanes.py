@@ -16,10 +16,14 @@ from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
 from textual.widgets import Static
 
+from .tuning import cents_off
+
 PHRASE = 4
 HIT_SECONDS = 0.09  # how long a row's chip lights up on a hit
 SHADES = "░▒▓█"
 NOTE_NAMES = "CcDdEFfGgAaB"  # lowercase = sharp
+# A note this far from its 12-EDO letter is drawn as between keys.
+MICRO_CENTS = 15
 PALETTE = ("#e5c07b", "#61afef", "#98c379", "#e06c75", "#c678dd", "#56b6c2",
            "#d19a66", "#a9b1d6", "#f7768e", "#73daca")
 
@@ -31,6 +35,7 @@ class Hit:
     glyph: str
     color: str
     level: float  # gain; 0 = sent but silent (e.g. a Flow drop)
+    micro: bool = False  # microtonal mode: between 12-EDO keys (drawn underlined)
 
 
 def color_for(sound: str) -> str:
@@ -67,15 +72,19 @@ class LaneModel:
         if hit.level > 1e-3:
             self.sounds.setdefault(f"d{pid}", {})[sound] = (cycle, hit.color)
 
-    def _look(self, ev: dict) -> tuple[str, str, float]:
+    def _look(self, ev: dict) -> tuple[str, str, float, bool]:
         sound = str(ev.get("s", "?"))
         level = float(ev.get("gain", 1.0))
         pitch = ev.get("note", ev.get("n") if sound in self.synths else None)
+        micro = False
         if pitch is not None:  # melodic: the note's letter
             glyph = NOTE_NAMES[round(float(pitch)) % 12]
+            # Only events from microtonal mode's `edo` carry the tag: anything
+            # else draws exactly as it always has.
+            micro = "edo" in ev and abs(cents_off(float(pitch))) > MICRO_CENTS
         else:
             glyph = SHADES[min(3, int(level / 0.3))] if level > 1e-3 else "·"
-        return glyph, color_for(sound), level
+        return glyph, color_for(sound), level, micro
 
     def advance(self, now: float) -> None:
         """Move events that have sounded by `now` onto the lanes."""
@@ -114,7 +123,7 @@ class LaneModel:
                     continue
                 i = min(len(cells) - 1, int(h.pos * steps))
                 if cells[i] is None or h.level > loud[i]:
-                    cells[i], loud[i] = (h.glyph, style), h.level
+                    cells[i], loud[i] = (h.glyph, style + " underline" * h.micro), h.level
         text = Text()
         for i, cell in enumerate(cells):
             if i % steps == 0:
